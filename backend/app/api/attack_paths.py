@@ -3,6 +3,7 @@ import time
 import logging
 
 from app.neo4j_config import driver
+from risk_engine import compute_risk_score
 
 router = APIRouter()
 
@@ -71,4 +72,21 @@ def get_all_paths(start: str, target: str):
         "paths": paths,
         "total_paths": len(paths),
         "execution_time": execution_time
+    }
+
+
+@router.get("/risk-score")
+def get_risk_score(asset_name: str):
+    risk_data = compute_risk_score(asset_name)
+
+    raw_inputs = risk_data.get("raw_inputs", {})
+
+    return {
+        "asset_name": risk_data.get("asset_name", asset_name),
+        "risk_score": risk_data.get("risk_score"),
+        "risk_level": risk_data.get("risk_level"),
+        "attack_path_details": {
+            "attack_path_count": raw_inputs.get("attack_path_count"),
+            "shortest_attack_path_length": raw_inputs.get("shortest_attack_path_length"),
+        },
     }

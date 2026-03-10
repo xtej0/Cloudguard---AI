@@ -29,7 +29,11 @@ def seed_graph():
         session.run("""
         CREATE (:Internet {
             name:'Internet',
-            trust_level:'untrusted'
+            trust_level:'untrusted',
+            vulnerability_severity:'low',
+            exposure_level:'public',
+            privilege_level:'none',
+            criticality:'low'
         })
         """)
 
@@ -38,7 +42,10 @@ def seed_graph():
             name:'Web Server VM',
             layer:'web',
             exposed:true,
-            criticality:'medium'
+            criticality:'medium',
+            vulnerability_severity:'medium',
+            exposure_level:'internet_exposed',
+            privilege_level:'read'
         })
         """)
 
@@ -47,7 +54,10 @@ def seed_graph():
             name:'Application Server VM',
             layer:'application',
             exposed:false,
-            criticality:'high'
+            criticality:'high',
+            vulnerability_severity:'high',
+            exposure_level:'internal',
+            privilege_level:'write'
         })
         """)
 
@@ -55,7 +65,11 @@ def seed_graph():
         CREATE (:Database {
             name:'Database Server',
             engine:'PostgreSQL',
-            sensitivity:'high'
+            sensitivity:'high',
+            vulnerability_severity:'high',
+            exposure_level:'internal',
+            privilege_level:'admin',
+            criticality:'critical'
         })
         """)
 
@@ -63,21 +77,32 @@ def seed_graph():
         CREATE (:Bucket {
             name:'Storage Bucket',
             sensitivity:'high',
-            contains:'customer_data'
+            contains:'customer_data',
+            vulnerability_severity:'medium',
+            exposure_level:'private',
+            privilege_level:'read',
+            criticality:'high'
         })
         """)
 
         session.run("""
         CREATE (:User {
             name:'User',
-            privilege:'standard'
+            privilege:'standard',
+            vulnerability_severity:'low',
+            exposure_level:'external',
+            privilege_level:'read',
+            criticality:'low'
         })
         """)
 
         session.run("""
         CREATE (:IAMRole {
             name:'IAM Role',
-            privilege_level:'admin'
+            privilege_level:'admin',
+            vulnerability_severity:'high',
+            exposure_level:'internal',
+            criticality:'high'
         })
         """)
 
