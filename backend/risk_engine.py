@@ -108,6 +108,42 @@ def fetch_all_asset_names() -> list[str]:
 		return [str(record["name"]) for record in result if record["name"]]
 
 
+def fetch_important_asset_names() -> list[str]:
+	"""Return names of important assets, excluding entry-point entities.
+
+	Importance is inferred from graph context/properties so this works across
+	different schema variants.
+	"""
+	query = """
+	MATCH (asset)
+	WHERE asset.name IS NOT NULL
+	  AND NOT asset:Internet
+	  AND NOT asset:User
+	WITH asset,
+	     coalesce(toLower(toString(asset.criticality)), toLower(toString(asset.asset_criticality)), '') AS crit,
+	     coalesce(toLower(toString(asset.severity)), toLower(toString(asset.vulnerability_severity)), '') AS sev,
+	     coalesce(toLower(toString(asset.exposure_level)), toLower(toString(asset.exposure_weight)), '') AS exp,
+	     coalesce(asset.internet_exposed, false) AS internet_exposed
+	OPTIONAL MATCH (asset)--(neighbor)
+	WITH asset, crit, sev, exp, internet_exposed, count(neighbor) AS degree
+	WHERE crit IN ['critical', 'high']
+	   OR sev IN ['critical', 'high']
+	   OR exp IN ['internet_exposed', 'public', 'external']
+	   OR internet_exposed = true
+	   OR degree > 0
+	RETURN DISTINCT asset.name AS name
+	"""
+
+	with driver.session() as session:
+		result = session.run(query)
+		important = [str(record["name"]) for record in result if record["name"]]
+
+	if important:
+		return important
+
+	return fetch_all_asset_names()
+
+
 def fetch_asset_relationships(asset_name: str) -> list[Dict[str, Any]]:
 	"""Return relationships connected to an asset node (up to 50)."""
 	query = """
@@ -130,6 +166,131 @@ def fetch_asset_relationships(asset_name: str) -> list[Dict[str, Any]]:
 			}
 			for record in result
 		]
+
+
+def _risk_level_from_score(risk_score: float) -> str:
+	"""Return risk label for a 0-100 score."""
+	return (
+		"CRITICAL"
+		if risk_score >= 80
+		else "HIGH"
+		if risk_score >= 60
+		else "MEDIUM"
+		if risk_score >= 35
+		else "LOW"
+	)
+
+
+def _build_contributing_factors(
+	asset_props: Dict[str, Any],
+	factor_scores: Dict[str, float],
+	attack_path_count: int,
+	shortest_attack_path_length: int | None,
+	relationship_count: int,
+) -> list[str]:
+	"""Generate concise, human-readable factors driving risk for an asset."""
+	factors: list[str] = []
+
+	exposure_raw = asset_props.get(
+		"exposure_weight",
+		asset_props.get("exposure_level", asset_props.get("internet_exposed", False)),
+	)
+	exposure_text = str(exposure_raw).strip().lower()
+	if factor_scores.get("exposure_weight", 0.0) >= 0.7:
+		if exposure_text in {"public", "internet_exposed", "external", "true"} or exposure_raw is True:
+			factors.append("Internet/public exposure increases attack surface")
+		else:
+			factors.append("High external exposure increases attack surface")
+
+	if factor_scores.get("vulnerability_severity", 0.0) >= 0.7:
+		factors.append("High vulnerability severity on this asset")
+
+	if factor_scores.get("privilege_escalation_potential", 0.0) >= 0.7:
+		factors.append("Strong privilege-escalation potential")
+
+	if factor_scores.get("asset_criticality", 0.0) >= 0.7:
+		factors.append("Business-critical asset impact is high")
+
+	if attack_path_count > 0:
+		factors.append(f"{attack_path_count} distinct attack path(s) from likely entry points")
+
+	if shortest_attack_path_length is not None:
+		if shortest_attack_path_length <= 2:
+			factors.append(f"Very short attack path ({shortest_attack_path_length} hops)")
+		elif shortest_attack_path_length <= 4:
+			factors.append(f"Moderate attack path length ({shortest_attack_path_length} hops)")
+
+	if relationship_count >= 10:
+		factors.append("Highly connected node increases lateral-movement options")
+
+	if not factors:
+		factors.append("Limited observed exposure and attack-path reachability")
+
+	return factors
+
+
+def _build_risk_explanation(asset_name: str, risk_score: float, risk_level: str, factors: list[str]) -> str:
+	"""Build a concise explanation sentence for API/UI consumption."""
+	lead = f"{asset_name} is assessed as {risk_level} risk ({risk_score}/100)."
+	if not factors:
+		return lead
+	return f"{lead} Key drivers: {'; '.join(factors[:3])}."
+
+
+def get_all_asset_risk_scores() -> list[Dict[str, Any]]:
+	"""Evaluate and return risk results for all important assets.
+
+	Returns:
+		List of dicts sorted by ``risk_score`` descending. Each dict contains:
+		``asset_name``, ``risk_score``, ``risk_level``, ``explanation``,
+		``contributing_factors``, and ``attack_path_details``.
+	"""
+	asset_names = fetch_important_asset_names()
+	results: list[Dict[str, Any]] = []
+
+	for asset_name in asset_names:
+		score_details = compute_risk_score(asset_name)
+		raw_inputs = dict(score_details.get("raw_inputs") or {})
+		factor_scores = dict(score_details.get("factor_scores") or {})
+		asset_props = dict(raw_inputs.get("asset_properties") or {})
+
+		attack_path_count = int(raw_inputs.get("attack_path_count") or 0)
+		shortest_attack_path_length = raw_inputs.get("shortest_attack_path_length")
+		relationships = fetch_asset_relationships(asset_name)
+
+		risk_score = float(score_details.get("risk_score") or 0.0)
+		risk_level = _risk_level_from_score(risk_score)
+
+		contributing_factors = _build_contributing_factors(
+			asset_props=asset_props,
+			factor_scores=factor_scores,
+			attack_path_count=attack_path_count,
+			shortest_attack_path_length=shortest_attack_path_length,
+			relationship_count=len(relationships),
+		)
+
+		attack_path_details = {
+			"attack_path_count": attack_path_count,
+			"shortest_attack_path_length": shortest_attack_path_length,
+			"relationship_count": len(relationships),
+			"entrypoint_reachability": (
+				"reachable" if attack_path_count > 0 else "not_reachable_from_known_entrypoints"
+			),
+		}
+
+		results.append(
+			{
+				"asset_name": asset_name,
+				"risk_score": round(risk_score, 2),
+				"risk_level": risk_level,
+				"explanation": _build_risk_explanation(asset_name, round(risk_score, 2), risk_level, contributing_factors),
+				"contributing_factors": contributing_factors,
+				"attack_path_details": attack_path_details,
+			}
+		)
+
+	results.sort(key=lambda item: item["risk_score"], reverse=True)
+	return results
 
 
 def compute_risk_score(asset_name: str) -> Dict[str, Any]:
@@ -227,15 +388,7 @@ def compute_risk_score(asset_name: str) -> Dict[str, Any]:
 		"asset_name": asset_name,
 		"node_type": node_type,
 		"risk_score": risk_score,
-		"risk_level": (
-			"CRITICAL"
-			if risk_score >= 80
-			else "HIGH"
-			if risk_score >= 60
-			else "MEDIUM"
-			if risk_score >= 35
-			else "LOW"
-		),
+		"risk_level": _risk_level_from_score(risk_score),
 		"weights": dict(WEIGHTS),
 		"factor_scores": {
 			"vulnerability_severity": round(vulnerability_factor, 3),
