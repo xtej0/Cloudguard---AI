@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.api.attack_paths import router as attack_router
+from app.api.attack_paths import router as attack_risk_router
 
 app = FastAPI(
     title="CloudGuard AI",
@@ -7,8 +7,8 @@ app = FastAPI(
     version="1.0"
 )
 
-app.include_router(attack_router)
+app.include_router(attack_risk_router)
 
 @app.get("/")
 def root():
-    return {"message": "CloudGuard AI backend running"}
+    return {"message": "CloudGuard AI backend running"} 

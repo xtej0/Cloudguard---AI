@@ -4,6 +4,7 @@ import logging
 
 from app.neo4j_config import driver
 from risk_engine import get_all_asset_risk_scores, compute_risk_score
+from app.services.attack_risk_service import get_attack_risk_summary
 
 router = APIRouter()
 
@@ -73,6 +74,19 @@ def get_all_paths(start: str, target: str):
         "total_paths": len(paths),
         "execution_time": execution_time
     }
+
+
+@router.get(
+    "/attack-risk-summary",
+    summary="Get attack risk summary between assets",
+    description="Returns a risk summary for attack paths from the start asset to the target asset.",
+)
+def attack_risk_summary(start: str, target: str):
+    try:
+        summary = get_attack_risk_summary(start=start, target=target)
+        return summary
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch attack risk summary: {str(exc)}")
 
 
 @router.get(
