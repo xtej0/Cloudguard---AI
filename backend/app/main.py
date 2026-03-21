@@ -11,4 +11,4 @@ app.include_router(attack_risk_router)
 
 @app.get("/")
 def root():
-    return {"message": "CloudGuard AI backend running"} 
+    return {"message": "CloudGuard AI backend running"}

@@ -18,17 +18,26 @@ def test_attack_risk_summary_success():
     data = response.json()
 
     # Core structure checks
-    assert "attack_path" in data
-    assert "risk_analysis" in data
+    assert "version" in data
+    assert "graph" in data
+    assert "risk" in data
+    assert "summary" in data
+    assert "prediction" in data
+    assert "mitigations" in data
 
-    # Attack path checks
-    assert "nodes" in data["attack_path"]
-    assert isinstance(data["attack_path"]["nodes"], list)
-    assert len(data["attack_path"]["nodes"]) > 0
+    # Graph checks
+    assert "nodes" in data["graph"]
+    assert isinstance(data["graph"]["nodes"], list)
+    assert len(data["graph"]["nodes"]) > 0
+    assert "edges" in data["graph"]
 
     # Risk checks
-    assert "risk_score" in data["risk_analysis"]
-    assert "risk_level" in data["risk_analysis"]
+    assert "top_assets" in data["risk"]
+
+    # Summary checks
+    assert "generated_at" in data["summary"]
+    assert "overall_risk_level" in data["summary"]
+    assert "highest_risk" in data["summary"]
 
 
 def test_attack_risk_summary_no_path():

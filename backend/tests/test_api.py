@@ -20,9 +20,10 @@ def test_get_risk_score_returns_expected_top_assets_shape():
 	assert response.status_code == 200
 	data = response.json()
 
-	assert "top_assets" in data
-	assert isinstance(data["top_assets"], list)
-	assert data["top_assets"]
+	assert "risk" in data
+	assert "top_assets" in data["risk"]
+	assert isinstance(data["risk"]["top_assets"], list)
+	assert data["risk"]["top_assets"]
 
 	required_keys = {
 		"asset_name",
@@ -33,7 +34,7 @@ def test_get_risk_score_returns_expected_top_assets_shape():
 		"attack_path_details",
 	}
 
-	for item in data["top_assets"]:
+	for item in data["risk"]["top_assets"]:
 		assert required_keys.issubset(item.keys())
 
 
@@ -42,7 +43,7 @@ def test_get_risk_score_results_sorted_by_descending_risk_score():
 
 	assert response.status_code == 200
 	data = response.json()
-	top_assets = data["top_assets"]
+	top_assets = data["risk"]["top_assets"]
 
 	risk_scores = [item["risk_score"] for item in top_assets]
 	assert risk_scores == sorted(risk_scores, reverse=True)
@@ -54,7 +55,17 @@ def test_get_risk_score_for_database_server_returns_expected_fields():
 	assert response.status_code == 200
 	data = response.json()
 
-	assert "asset_name" in data
-	assert "risk_score" in data
-	assert "risk_level" in data
-	assert "attack_path_details" in data
+	assert "risk" in data
+	assert "top_assets" in data["risk"]
+	assert len(data["risk"]["top_assets"]) > 0
+
+	asset_data = data["risk"]["top_assets"][0]
+	assert "asset_name" in asset_data
+	assert "risk_score" in asset_data
+	assert "risk_level" in asset_data
+	assert "attack_path_details" in asset_data
+
+	assert "summary" in data
+	assert "target_asset" in data["summary"]
+	assert "overall_risk_level" in data["summary"]
+	assert "generated_at" in data["summary"]
