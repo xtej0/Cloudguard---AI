@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.api.attack_paths import router as attack_risk_router
+from app.routes.attack_paths import router as attack_risk_router
 
 app = FastAPI(
     title="CloudGuard AI",

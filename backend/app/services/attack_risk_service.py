@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.neo4j_config import driver
-from risk_engine import compute_risk_score as calculate_risk_score
+from app.services.attack_graph_service import get_shortest_attack_path
+from app.services.risk_service import calculate_risk_score
 
 
 def _extract_attack_path_summary(path_result: Any) -> dict[str, Any]:
@@ -66,6 +66,7 @@ def _extract_risk_summary(risk_result: Any, target: str) -> dict[str, Any]:
 
 
 def get_attack_risk_summary(start: str, target: str) -> dict[str, Any]:
+    """Return attack path and risk summary between start and target assets."""
     start_value = str(start).strip() if start else ""
     target_value = str(target).strip() if target else ""
 
@@ -73,25 +74,11 @@ def get_attack_risk_summary(start: str, target: str) -> dict[str, Any]:
     if not start_value or not target_value:
         return {"error": "Start and target must be provided"}
 
-    # --- ATTACK PATH QUERY (DIRECT DB CALL → FIXES CIRCULAR IMPORT) ---
+    # --- ATTACK PATH QUERY ---
     try:
-        query = """
-        MATCH p = shortestPath((a {name:$start})-[*]->(b {name:$target}))
-        RETURN nodes(p) as nodes, relationships(p) as rels
-        """
-
-        with driver.session() as session:
-            result = session.run(query, start=start_value, target=target_value)
-            record = result.single()
-
-        if not record:
-            return {"error": f"No attack path found from {start_value} to {target_value}"}
-
-        path_result = {
-            "nodes": [node["name"] for node in record["nodes"]],
-            "relationships": [rel.type for rel in record["rels"]],
-            "path_length": len(record["nodes"]),
-        }
+        path_result = get_shortest_attack_path(start=start_value, target=target_value)
+        if not path_result:
+            return {"error": "No attack path found between given nodes"}
 
     except Exception as e:
         return {"error": f"Attack path computation failed: {str(e)}"}
