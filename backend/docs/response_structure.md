@@ -38,6 +38,7 @@ The following endpoints all return the same unified schema:
 
 ```json
 {
+  "version": "v1",
   "graph": {
     "nodes": [],
     "edges": []
@@ -50,6 +51,24 @@ The following endpoints all return the same unified schema:
   },
   "summary": {},
   "mitigations": []
+}
+```
+
+### Error Handling Contract
+
+Errors are returned using the same unified schema. There is no standalone top-level
+`{"error": ...}` payload. Instead, error details are placed under `summary.error`.
+
+```json
+{
+  "version": "v1",
+  "graph": { "nodes": [], "edges": [] },
+  "risk": { "top_assets": [] },
+  "prediction": { "next_targets": [] },
+  "mitigations": [],
+  "summary": {
+    "error": "No attack path found between given nodes"
+  }
 }
 ```
 
@@ -171,8 +190,8 @@ Contains contextual information about the response.
 ```json
 {
   "summary": {
-    "start_node": "Internet",
-    "target_node": "Database Server",
+    "start_asset": "Internet",
+    "target_asset": "Database Server",
     "path_length": 3,
     "total_paths": 5
   }
@@ -190,10 +209,9 @@ Contains contextual information about the response.
 ```json
 {
   "summary": {
-    "asset_name": "Database Server",
-    "risk_score": 85.5,
+    "target_asset": "Database Server",
     "risk_level": "CRITICAL",
-    "attack_path_details": { ... }
+    "generated_at": "2026-03-23T12:00:00+00:00"
   }
 }
 ```
@@ -320,8 +338,8 @@ Reserved for future security recommendations.
     "next_targets": []
   },
   "summary": {
-    "start_node": "Internet",
-    "target_node": "Database Server",
+    "start_asset": "Internet",
+    "target_asset": "Database Server",
     "total_paths": 1
   },
   "mitigations": []

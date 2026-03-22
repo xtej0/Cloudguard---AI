@@ -51,7 +51,8 @@ def test_attack_risk_summary_no_path():
 
     data = response.json()
 
-    assert "error" in data
+    assert "summary" in data
+    assert "error" in data["summary"]
 
 
 def test_attack_risk_summary_missing_params():

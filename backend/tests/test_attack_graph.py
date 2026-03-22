@@ -1,7 +1,7 @@
 import pytest
 
-from backend.attack_graph import find_attack_paths, shortest_attack_path
-from backend.graph_schema import Edge, Graph, Node, NodeType, RelationshipType
+from app.models.graph_schema import Edge, Graph, Node, NodeType, RelationshipType
+from app.services.attack_graph_service import find_attack_paths, shortest_attack_path
 
 
 @pytest.fixture

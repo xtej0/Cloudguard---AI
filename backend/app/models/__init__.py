@@ -1,21 +1,9 @@
-from .response_models import (
-	AttackRiskSummaryResponse,
-	ErrorResponse,
-	GraphEdge,
-	GraphNode,
-	GraphSection,
-	PredictionSection,
-	RiskSection,
-	SummarySection,
-)
+from .graph_schema import Edge, Graph, Node, NodeType, RelationshipType
 
 __all__ = [
-	"AttackRiskSummaryResponse",
-	"ErrorResponse",
-	"GraphEdge",
-	"GraphNode",
-	"GraphSection",
-	"PredictionSection",
-	"RiskSection",
-	"SummarySection",
+    "Edge",
+    "Graph",
+    "Node",
+    "NodeType",
+    "RelationshipType",
 ]

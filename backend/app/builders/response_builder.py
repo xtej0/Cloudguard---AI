@@ -8,9 +8,29 @@ from app.services.summary_service import build_attack_summary_message, utc_now_i
 from app.utils.graph_formatter import make_edge, make_node, path_to_cytoscape_nodes_edges
 
 
-def build_error_response(message: str) -> dict[str, str]:
-    """Build standardized error payload."""
-    return {"error": message}
+def build_error_response(
+    message: str,
+    *,
+    start: str | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Build standardized error payload using the unified response schema."""
+    summary: dict[str, Any] = {
+        "error": message,
+        "generated_at": utc_now_iso(),
+    }
+    if start is not None:
+        summary["start_asset"] = start
+    if target is not None:
+        summary["target_asset"] = target
+
+    return build_attack_risk_summary_response(
+        graph={"nodes": [], "edges": []},
+        risk_top_assets=[],
+        summary=summary,
+        prediction=[],
+        mitigations=[],
+    )
 
 
 def build_graph_response(nodes: list[str], relationships: list[str] | None = None) -> dict[str, list[dict[str, Any]]]:
@@ -164,6 +184,13 @@ def build_attack_risk_response(
     target_exists: bool | None = None,
 ) -> dict[str, Any]:
     """Build response payload for attack-risk summary endpoint."""
+    if "error" in summary_data:
+        return build_error_response(
+            str(summary_data.get("error") or "Unknown error"),
+            start=start,
+            target=target,
+        )
+
     nodes = summary_data.get("attack_path", {}).get("nodes", [])
 
     start_asset = start if start is not None else summary_data.get("start")

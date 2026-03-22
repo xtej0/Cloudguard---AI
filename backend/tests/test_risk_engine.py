@@ -7,12 +7,12 @@ fake_neo4j_config = types.ModuleType("app.neo4j_config")
 fake_neo4j_config.driver = object()
 sys.modules.setdefault("app.neo4j_config", fake_neo4j_config)
 
-import risk_engine
+from app.services import risk_service
 
 
 def test_compute_risk_score_is_clamped_between_0_and_100(monkeypatch):
 	monkeypatch.setattr(
-		risk_engine,
+		risk_service,
 		"fetch_asset_properties",
 		lambda _: {
 			"vulnerability_severity": "critical",
@@ -22,14 +22,14 @@ def test_compute_risk_score_is_clamped_between_0_and_100(monkeypatch):
 			"labels": ["Server"],
 		},
 	)
-	monkeypatch.setattr(risk_engine, "fetch_attack_paths", lambda _: 1000)
-	monkeypatch.setattr(risk_engine, "fetch_shortest_attack_path_length", lambda _: -10)
+	monkeypatch.setattr(risk_service, "fetch_attack_paths", lambda _: 1000)
+	monkeypatch.setattr(risk_service, "fetch_shortest_attack_path_length", lambda _: -10)
 
-	high = risk_engine.compute_risk_score("high-asset")
+	high = risk_service.compute_risk_score("high-asset")
 	assert 0.0 <= high["risk_score"] <= 100.0
 
 	monkeypatch.setattr(
-		risk_engine,
+		risk_service,
 		"fetch_asset_properties",
 		lambda _: {
 			"vulnerability_severity": "none",
@@ -39,10 +39,10 @@ def test_compute_risk_score_is_clamped_between_0_and_100(monkeypatch):
 			"labels": ["Server"],
 		},
 	)
-	monkeypatch.setattr(risk_engine, "fetch_attack_paths", lambda _: 0)
-	monkeypatch.setattr(risk_engine, "fetch_shortest_attack_path_length", lambda _: None)
+	monkeypatch.setattr(risk_service, "fetch_attack_paths", lambda _: 0)
+	monkeypatch.setattr(risk_service, "fetch_shortest_attack_path_length", lambda _: None)
 
-	low = risk_engine.compute_risk_score("low-asset")
+	low = risk_service.compute_risk_score("low-asset")
 	assert 0.0 <= low["risk_score"] <= 100.0
 
 
@@ -76,7 +76,7 @@ def test_score_and_rank_query_results_returns_highest_risk_first():
 		},
 	]
 
-	ranked = risk_engine.score_and_rank_query_results(records, top_n=2)
+	ranked = risk_service.score_and_rank_query_results(records, top_n=2)
 
 	assert ranked[0]["asset_name"] == "db-server"
 	assert ranked[0]["risk_score"] >= ranked[1]["risk_score"]
@@ -84,7 +84,7 @@ def test_score_and_rank_query_results_returns_highest_risk_first():
 
 def test_rank_assets_respects_top_n_count(monkeypatch):
 	monkeypatch.setattr(
-		risk_engine,
+		risk_service,
 		"compute_risk_score",
 		lambda name: {
 			"asset_name": name,
@@ -94,10 +94,10 @@ def test_rank_assets_respects_top_n_count(monkeypatch):
 			"factor_scores": {},
 		},
 	)
-	monkeypatch.setattr(risk_engine, "fetch_asset_relationships", lambda _: [])
+	monkeypatch.setattr(risk_service, "fetch_asset_relationships", lambda _: [])
 
 	assets = ["asset-10", "asset-50", "asset-30", "asset-70", "asset-20"]
-	top = risk_engine.rank_assets(asset_names=assets, top_n=3)
+	top = risk_service.rank_assets(asset_names=assets, top_n=3)
 
 	assert len(top) == 3
 	assert [item["asset_name"] for item in top] == ["asset-70", "asset-50", "asset-30"]

@@ -4,13 +4,11 @@ import logging
 import time
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 
 from app.builders.response_builder import (
     build_all_paths_response,
     build_attack_path_response,
     build_attack_risk_response,
-    build_error_response,
     build_risk_score_response,
     build_single_asset_risk_response,
 )
@@ -21,7 +19,7 @@ from app.services.attack_graph_service import (
     get_shortest_attack_path,
 )
 from app.services.attack_risk_service import get_attack_risk_summary
-from app.services.risk_service import calculate_risk_score, get_top_asset_risk_scores
+from app.services.risk_service import get_single_asset_risk_data, get_top_asset_risk_scores
 
 router = APIRouter()
 
@@ -88,9 +86,6 @@ def attack_risk_summary(start: str, target: str):
     try:
         start_exists, target_exists = get_asset_existence(start, target)
         summary = get_attack_risk_summary(start=start, target=target)
-        if isinstance(summary, dict) and "error" in summary:
-            return JSONResponse(content=build_error_response(summary["error"]))
-
         return build_attack_risk_response(
             summary,
             start=start,
@@ -126,18 +121,7 @@ def get_top_risk_scores():
 def get_asset_risk_score(asset_name: str):
     """Return risk score details for a single asset."""
     try:
-        risk_data = calculate_risk_score(asset_name)
-        raw_inputs = risk_data.get("raw_inputs", {})
-
-        asset_data = {
-            "asset_name": risk_data.get("asset_name", asset_name),
-            "risk_score": risk_data.get("risk_score"),
-            "risk_level": risk_data.get("risk_level"),
-            "attack_path_details": {
-                "attack_path_count": raw_inputs.get("attack_path_count"),
-                "shortest_attack_path_length": raw_inputs.get("shortest_attack_path_length"),
-            },
-        }
+        asset_data = get_single_asset_risk_data(asset_name)
         return build_single_asset_risk_response(asset_data)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch risk score for asset '{asset_name}': {str(exc)}")
