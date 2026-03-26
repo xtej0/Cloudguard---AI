@@ -21,7 +21,7 @@ COUNT_COLUMNS = [
 ]
 
 IMPORTANT_COLUMNS = [
-    "risk_score",
+    "exposure_score",
     "critical_vulnerability_count",
     "vulnerability_count",
     "attack_path_count",
@@ -81,12 +81,6 @@ def validate_dataset(dataset: pd.DataFrame) -> List[str]:
 
     warnings: List[str] = []
 
-    invalid_risk_score = ~dataset["risk_score"].between(0, 100)
-    if invalid_risk_score.any():
-        warnings.append(
-            f"risk_score outside 0..100 in {int(invalid_risk_score.sum())} rows."
-        )
-
     invalid_critical_vuln = dataset["critical_vulnerability_count"] > dataset["vulnerability_count"]
     if invalid_critical_vuln.any():
         warnings.append(
@@ -133,6 +127,7 @@ def validate_dataset(dataset: pd.DataFrame) -> List[str]:
     if "risk_level" not in dataset.columns:
         warnings.append("Missing expected column: risk_level")
     else:
+        # risk_score removed to prevent ML data leakage; validate label values directly.
         invalid_levels = ~dataset["risk_level"].isin(VALID_RISK_LEVELS)
         if invalid_levels.any():
             warnings.append(

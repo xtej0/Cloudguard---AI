@@ -1,9 +1,10 @@
-"""Generate a production-style synthetic cloud attack dataset for ML experiments."""
+"""Generate a realistic synthetic cloud attack dataset for ML training."""
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from math import exp
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -14,17 +15,8 @@ NUM_ROWS = 10000
 RANDOM_SEED = 42
 OUTPUT_FILE = Path(__file__).resolve().parent / "synthetic_attack_dataset.csv"
 
-RISK_LEVEL_BOUNDS: Dict[str, Tuple[int, int]] = {
-    "LOW": (0, 34),
-    "MEDIUM": (35, 69),
-    "HIGH": (70, 100),
-}
-
-TARGET_RISK_LEVEL_WEIGHTS: Dict[str, float] = {
-    "LOW": 0.25,
-    "MEDIUM": 0.40,
-    "HIGH": 0.35,
-}
+# Fixed seed for reproducibility in ML experiments and debugging.
+random.seed(RANDOM_SEED)
 
 ASSET_TYPES = ["VM", "Database", "Bucket", "IAM Role", "Container", "Load Balancer"]
 ASSET_WEIGHTS = [0.24, 0.16, 0.18, 0.12, 0.18, 0.12]
@@ -61,12 +53,6 @@ ASSET_PROFILES: Dict[str, AssetProfile] = {
     "Load Balancer": AssetProfile(0.82, 0.09, 0.24, 0.13, (1, 10), (1, 9), (0.14, 0.34), (1, 6), 0.22, 0.20),
 }
 
-BAND_ADJUSTMENTS: Dict[str, Dict[str, float]] = {
-    "LOW": {"p": -0.18, "count": -0.34},
-    "MEDIUM": {"p": 0.00, "count": 0.00},
-    "HIGH": {"p": 0.22, "count": 0.46},
-}
-
 RISK_LEVELS = ["LOW", "MEDIUM", "HIGH"]
 
 
@@ -80,34 +66,6 @@ def to_binary(probability: float, rng: random.Random) -> int:
     """Sample a 0/1 value from a probability."""
 
     return 1 if rng.random() < clamp(probability, 0.0, 1.0) else 0
-
-
-def risk_level_from_score(score: float) -> str:
-    """Map a risk score to its categorical risk level."""
-
-    for level, (lower, upper) in RISK_LEVEL_BOUNDS.items():
-        if lower <= score <= upper:
-            return level
-    return "HIGH"
-
-
-def adjusted_count(
-    base_range: Tuple[int, int],
-    band: str,
-    rng: random.Random,
-    floor: int = 0,
-    cap: int | None = None,
-) -> int:
-    """Generate a count from a range with risk-band driven adjustment."""
-
-    low, high = base_range
-    base_value = rng.randint(low, high)
-    span = max(1, high - low)
-    delta = int(round(BAND_ADJUSTMENTS[band]["count"] * span))
-    value = base_value + delta + rng.randint(-1, 1)
-    if cap is None:
-        return max(floor, value)
-    return int(clamp(value, floor, cap))
 
 
 def choose_asset_type(rng: random.Random) -> str:
@@ -126,7 +84,6 @@ def compute_attack_path_count(
     privilege_escalation_possible: int,
     internet_exposed: int,
     public_access: int,
-    band: str,
     rng: random.Random,
 ) -> int:
     """Estimate attack path count from structural weaknesses and exposure."""
@@ -164,15 +121,17 @@ def compute_attack_path_count(
     if asset_type == "VM" and internet_exposed and critical_vulnerability_count >= 3:
         signal += 2.2
 
-    signal *= 0.85 if band == "LOW" else 1.0
-    signal *= 1.18 if band == "HIGH" else 1.0
-
     jitter = rng.uniform(-1.2, 1.2)
     value = int(round(signal + jitter))
     return int(clamp(value, 0, 24))
 
 
-def compute_shortest_path_length(attack_path_count: int, band: str, rng: random.Random) -> int:
+def compute_shortest_path_length(
+    attack_path_count: int,
+    exposure_flag: int,
+    movement_flag: int,
+    rng: random.Random,
+) -> int:
     """Return shortest attack path length.
 
     A value of 0 explicitly means no valid attack path exists.
@@ -182,17 +141,43 @@ def compute_shortest_path_length(attack_path_count: int, band: str, rng: random.
     if attack_path_count == 0:
         return 0
 
-    if band == "HIGH":
+    if attack_path_count >= 10:
         value = rng.randint(1, 4)
-    elif band == "MEDIUM":
+    elif attack_path_count >= 5:
         value = rng.randint(2, 6)
     else:
         value = rng.randint(4, 9)
 
+    # Exposure and movement potential often create shorter viable paths.
+    if exposure_flag:
+        value -= 1
+    if movement_flag:
+        value -= 1
+
     # More available paths usually include at least one short route.
     if attack_path_count >= 8:
         value = max(1, value - 1)
-    return value
+    return int(clamp(value, 1, 10))
+
+
+def weighted_count(
+    base_range: Tuple[int, int],
+    pressure: float,
+    rng: random.Random,
+    floor: int = 0,
+    cap: int | None = None,
+) -> int:
+    """Generate a correlated count using a pressure term in [-1, 1]."""
+
+    low, high = base_range
+    span = max(1, high - low)
+    midpoint = (low + high) / 2
+    shifted = midpoint + pressure * (span / 2)
+    jitter = rng.uniform(-0.20 * span, 0.20 * span)
+    value = int(round(shifted + jitter))
+    if cap is None:
+        return max(floor, value)
+    return int(clamp(value, floor, cap))
 
 
 def compute_component_scores(
@@ -259,27 +244,25 @@ def compute_component_scores(
     )
 
 
-def compute_risk_score(
-    exposure_score: float,
-    identity_risk_score: float,
-    network_risk_score: float,
-    row: Dict[str, int | str],
-    rng: random.Random,
-) -> float:
-    """Compute weighted final risk score bounded to 0..100."""
+def compute_risk_score(features: Dict[str, int | float | str], rng: random.Random) -> float:
+    """Compute weighted final risk score from multi-factor security signals."""
 
-    critical_vuln_factor = min(row["critical_vulnerability_count"] / 8, 1.0)
-    path_factor = min(row["attack_path_count"] / 18, 1.0)
-    vuln_factor = min(row["vulnerability_count"] / 24, 1.0)
-    misconfig_factor = min(row["misconfiguration_count"] / 12, 1.0)
+    exposure_score = float(features["exposure_score"])
+    identity_risk_score = float(features["identity_risk_score"])
+    network_risk_score = float(features["network_risk_score"])
 
-    if row["attack_path_count"] == 0 or row["shortest_path_length"] == 0:
+    critical_vuln_factor = min(float(features["critical_vulnerability_count"]) / 8, 1.0)
+    path_factor = min(float(features["attack_path_count"]) / 18, 1.0)
+    vuln_factor = min(float(features["vulnerability_count"]) / 24, 1.0)
+    misconfig_factor = min(float(features["misconfiguration_count"]) / 12, 1.0)
+
+    if int(features["attack_path_count"]) == 0 or int(features["shortest_path_length"]) == 0:
         shortest_path_pressure = 0.0
     else:
-        shortest_path_pressure = 1 - min((row["shortest_path_length"] - 1) / 9, 1.0)
+        shortest_path_pressure = 1 - min((float(features["shortest_path_length"]) - 1) / 9, 1.0)
 
     # If there is no attack path, penalize final score to keep realistic posture.
-    no_path_penalty = 0.76 if row["attack_path_count"] == 0 else 1.0
+    no_path_penalty = 0.76 if int(features["attack_path_count"]) == 0 else 1.0
 
     raw_score = (
         0.27 * exposure_score
@@ -290,43 +273,64 @@ def compute_risk_score(
         + 4.8 * vuln_factor
         + 4.0 * misconfig_factor
         + 4.8 * shortest_path_pressure
-        + 3.0 * row["has_critical_data"]
+        + 3.0 * int(features["has_critical_data"])
     )
 
-    asset_type = str(row["asset_type"])
-    if asset_type == "Bucket" and row["public_access"]:
+    asset_type = str(features["asset_type"])
+    if asset_type == "Bucket" and int(features["public_access"]):
         raw_score += 8.0
-    if asset_type == "Database" and row["internet_exposed"]:
+    if asset_type == "Database" and int(features["internet_exposed"]):
         raw_score += 8.0
-    if asset_type == "IAM Role" and row["weak_iam"]:
+    if asset_type == "IAM Role" and int(features["weak_iam"]):
         raw_score += 8.5
-    if asset_type == "Load Balancer" and row["internet_exposed"]:
+    if asset_type == "Load Balancer" and int(features["internet_exposed"]):
         raw_score += 4.5
-    if asset_type == "VM" and row["internet_exposed"] and row["critical_vulnerability_count"] >= 3:
+    if asset_type == "VM" and int(features["internet_exposed"]) and int(features["critical_vulnerability_count"]) >= 3:
         raw_score += 5.5
 
     if (
-        row["internet_exposed"] == 0
-        and row["public_access"] == 0
-        and row["vulnerability_count"] <= 2
-        and row["misconfiguration_count"] <= 1
-        and row["privilege_escalation_possible"] == 0
-        and row["lateral_movement_possible"] == 0
+        int(features["internet_exposed"]) == 0
+        and int(features["public_access"]) == 0
+        and int(features["vulnerability_count"]) <= 2
+        and int(features["misconfiguration_count"]) <= 1
+        and int(features["privilege_escalation_possible"]) == 0
+        and int(features["lateral_movement_possible"]) == 0
     ):
         raw_score -= 9.0
 
-    jitter = rng.uniform(-2.2, 2.2)
+    # Controlled randomness prevents hard deterministic boundaries.
+    jitter = rng.uniform(-5.0, 5.0)
     return clamp((raw_score + jitter) * no_path_penalty, 0, 100)
 
 
-def generate_scenario(target_level: str, scenario_index: int, rng: random.Random) -> Dict[str, int | float | str]:
-    """Generate one scenario aligned to a target risk level using rule-based logic."""
+def assign_risk_level(score: float, rng: random.Random) -> str:
+    """Assign LOW/MEDIUM/HIGH probabilistically from internal score."""
+
+    normalized = clamp(score / 100.0, 0.0, 1.0)
+    high_logit = -1.70 + 3.75 * normalized
+    low_logit = -1.55 + 3.65 * (1.0 - normalized)
+    medium_logit = 1.05 - 3.00 * abs(normalized - 0.53)
+
+    # Mild priors keep distribution realistic without forcing strict balancing.
+    priors = {"LOW": 0.95, "MEDIUM": 1.10, "HIGH": 0.95}
+    weights = {
+        "LOW": exp(low_logit) * priors["LOW"],
+        "MEDIUM": exp(medium_logit) * priors["MEDIUM"],
+        "HIGH": exp(high_logit) * priors["HIGH"],
+    }
+
+    total = sum(weights.values())
+    probabilities = [weights[level] / total for level in RISK_LEVELS]
+    return rng.choices(RISK_LEVELS, weights=probabilities, k=1)[0]
+
+
+def generate_scenario(scenario_index: int, rng: random.Random) -> Dict[str, int | float | str]:
+    """Generate one scenario with realistic correlated security posture signals."""
 
     asset_type = choose_asset_type(rng)
     profile = ASSET_PROFILES[asset_type]
-    band_delta = BAND_ADJUSTMENTS[target_level]["p"]
 
-    internet_exposed = to_binary(profile.internet_exposed_p + band_delta, rng)
+    internet_exposed = to_binary(profile.internet_exposed_p, rng)
     public_boost = 0.12 if internet_exposed else -0.06
     if asset_type == "Bucket":
         public_boost += 0.12
@@ -334,30 +338,39 @@ def generate_scenario(target_level: str, scenario_index: int, rng: random.Random
         public_boost -= 0.05
     elif asset_type == "IAM Role":
         public_boost -= 0.07
-    public_access = to_binary(profile.public_access_p + band_delta + public_boost, rng)
-    has_critical_data = to_binary(profile.critical_data_p + 0.55 * band_delta, rng)
+    public_access = to_binary(profile.public_access_p + public_boost, rng)
+    has_critical_data = to_binary(profile.critical_data_p, rng)
     weak_iam_boost = 0.08 if asset_type == "IAM Role" else 0.0
-    weak_iam = to_binary(profile.weak_iam_p + band_delta + weak_iam_boost, rng)
+    weak_iam = to_binary(profile.weak_iam_p + weak_iam_boost, rng)
 
-    vulnerability_count = adjusted_count(profile.vulnerability_range, target_level, rng, floor=0, cap=30)
+    pressure = (
+        0.26 * internet_exposed
+        + 0.24 * public_access
+        + 0.20 * weak_iam
+        + 0.16 * has_critical_data
+        + rng.uniform(-0.18, 0.18)
+    )
+    pressure = clamp(pressure, -1.0, 1.0)
+
+    vulnerability_count = weighted_count(profile.vulnerability_range, pressure, rng, floor=0, cap=30)
 
     ratio_low, ratio_high = profile.critical_vuln_ratio_range
     ratio = rng.uniform(ratio_low, ratio_high)
-    ratio += 0.08 if target_level == "HIGH" else 0.0
-    ratio -= 0.07 if target_level == "LOW" else 0.0
+    ratio += 0.08 * pressure
     ratio = clamp(ratio, 0.0, 0.70)
     critical_vulnerability_count = int(round(vulnerability_count * ratio))
     critical_vulnerability_count = int(clamp(critical_vulnerability_count + rng.randint(-1, 1), 0, min(12, vulnerability_count)))
 
-    misconfiguration_count = adjusted_count(profile.misconfiguration_range, target_level, rng, floor=0, cap=12)
-    open_port_count = adjusted_count(profile.open_port_range, target_level, rng, floor=0, cap=25)
+    misconfiguration_count = weighted_count(profile.misconfiguration_range, pressure, rng, floor=0, cap=12)
+    open_port_count = weighted_count(profile.open_port_range, pressure, rng, floor=0, cap=25)
 
     lateral_movement_p = (
         profile.lateral_movement_base_p
         + 0.23 * weak_iam
         + 0.025 * min(vulnerability_count, 14)
-        + (0.16 if target_level == "HIGH" else 0.0)
-        - (0.09 if target_level == "LOW" else 0.0)
+        + 0.10 * internet_exposed
+        + 0.08 * public_access
+        + 0.06 * min(misconfiguration_count / 8, 1.0)
     )
     lateral_movement_possible = to_binary(lateral_movement_p, rng)
 
@@ -365,8 +378,7 @@ def generate_scenario(target_level: str, scenario_index: int, rng: random.Random
         profile.privilege_escalation_base_p
         + 0.25 * weak_iam
         + 0.05 * min(critical_vulnerability_count, 6)
-        + (0.15 if target_level == "HIGH" else 0.0)
-        - (0.09 if target_level == "LOW" else 0.0)
+        + 0.05 * min(vulnerability_count / 14, 1.0)
     )
     privilege_escalation_possible = to_binary(privilege_escalation_p, rng)
 
@@ -380,10 +392,14 @@ def generate_scenario(target_level: str, scenario_index: int, rng: random.Random
         privilege_escalation_possible,
         internet_exposed,
         public_access,
-        target_level,
         rng,
     )
-    shortest_path_length = compute_shortest_path_length(attack_path_count, target_level, rng)
+    shortest_path_length = compute_shortest_path_length(
+        attack_path_count,
+        1 if internet_exposed or public_access else 0,
+        1 if lateral_movement_possible or privilege_escalation_possible else 0,
+        rng,
+    )
 
     row: Dict[str, int | float | str] = {
         "scenario_id": f"SCN-{scenario_index:05d}",
@@ -403,31 +419,25 @@ def generate_scenario(target_level: str, scenario_index: int, rng: random.Random
     }
 
     exposure_score, identity_risk_score, network_risk_score = compute_component_scores(row)
-    risk_score = compute_risk_score(exposure_score, identity_risk_score, network_risk_score, row, rng)
 
     row["exposure_score"] = round(exposure_score, 2)
     row["identity_risk_score"] = round(identity_risk_score, 2)
     row["network_risk_score"] = round(network_risk_score, 2)
-    row["risk_score"] = round(risk_score, 2)
-    row["risk_level"] = risk_level_from_score(float(row["risk_score"]))
+
+    internal_risk_score = compute_risk_score(row, rng)
+    row["risk_level"] = assign_risk_level(internal_risk_score, rng)
 
     return row
 
 
 def generate_dataset(row_count: int = NUM_ROWS, seed: int = RANDOM_SEED) -> pd.DataFrame:
-    """Generate full synthetic dataset with realistic and balanced distributions."""
+    """Generate full synthetic dataset suitable for ML classification training."""
 
     rng = random.Random(seed)
 
-    target_levels: List[str] = rng.choices(
-        RISK_LEVELS,
-        weights=[TARGET_RISK_LEVEL_WEIGHTS[level] for level in RISK_LEVELS],
-        k=row_count,
-    )
-
     scenarios: List[Dict[str, int | float | str]] = []
-    for index, target_level in enumerate(target_levels, start=1):
-        candidate = generate_scenario(target_level, index, rng)
+    for index in range(1, row_count + 1):
+        candidate = generate_scenario(index, rng)
         scenarios.append(candidate)
 
     dataset = pd.DataFrame(scenarios)
@@ -450,7 +460,6 @@ def generate_dataset(row_count: int = NUM_ROWS, seed: int = RANDOM_SEED) -> pd.D
         "exposure_score",
         "identity_risk_score",
         "network_risk_score",
-        "risk_score",
         "risk_level",
     ]
 
@@ -458,26 +467,23 @@ def generate_dataset(row_count: int = NUM_ROWS, seed: int = RANDOM_SEED) -> pd.D
 
 
 def print_summary(dataset: pd.DataFrame) -> None:
-    """Print generation summary required for quick verification."""
+    """Print quality checks required for generation validation."""
 
-    print(f"Total rows generated: {len(dataset)}")
+    print(f"Dataset shape: {dataset.shape}")
     print("\nRisk level distribution:")
     risk_counts = dataset["risk_level"].value_counts().reindex(RISK_LEVELS, fill_value=0)
     print(risk_counts)
     print("\nRisk level percentages:")
     print((risk_counts / len(dataset) * 100).round(2))
 
-    print("\nAsset type distribution:")
-    asset_counts = dataset["asset_type"].value_counts().reindex(ASSET_TYPES, fill_value=0)
-    print(asset_counts)
-    print("\nAsset type percentages:")
-    print((asset_counts / len(dataset) * 100).round(2))
+    print("\nMissing values per column:")
+    print(dataset.isna().sum())
 
 
 def main() -> None:
     """Generate, save, and summarize synthetic cloud attack dataset."""
 
-    random.seed(RANDOM_SEED)
+    print(f"Using random seed: {RANDOM_SEED}")
     dataset = generate_dataset(row_count=NUM_ROWS, seed=RANDOM_SEED)
     dataset.to_csv(OUTPUT_FILE, index=False)
     print(f"CSV save path: {OUTPUT_FILE}")
