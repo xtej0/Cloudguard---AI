@@ -7,7 +7,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -87,18 +87,26 @@ def main() -> None:
     )
 
     # -----------------------------
-    # 7. Train model
+    # 7. Train Random Forest model (tuned)
     # -----------------------------
-    model = RandomForestClassifier(n_estimators=100, random_state=RANDOM_SEED)
+    model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=12,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        class_weight="balanced",
+        random_state=RANDOM_SEED,
+    )
     model.fit(X_train, y_train)
 
     # -----------------------------
-    # 8. Evaluate model
+    # 8. Evaluate models
     # -----------------------------
     y_pred = model.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
 
-    print(f"\nAccuracy: {accuracy:.4f}")
+    print("\n======== RANDOM FOREST RESULTS ========")
+    print(f"Accuracy: {accuracy:.4f}")
     print("\nClassification Report:")
     print(
         classification_report(
@@ -111,6 +119,23 @@ def main() -> None:
 
     print("Confusion Matrix:")
     print(confusion_matrix(y_test, y_pred))
+
+    gb_model = GradientBoostingClassifier(random_state=RANDOM_SEED)
+    gb_model.fit(X_train, y_train)
+    gb_pred = gb_model.predict(X_test)
+    gb_accuracy = accuracy_score(y_test, gb_pred)
+
+    print("\n======== GRADIENT BOOSTING RESULTS ========")
+    print(f"Accuracy: {gb_accuracy:.4f}")
+    print("\nClassification Report:")
+    print(
+        classification_report(
+            y_test,
+            gb_pred,
+            target_names=target_encoder.classes_,
+            zero_division=0,
+        )
+    )
 
     # -----------------------------
     # 9. Feature importance

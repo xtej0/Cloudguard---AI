@@ -299,29 +299,20 @@ def compute_risk_score(features: Dict[str, int | float | str], rng: random.Rando
         raw_score -= 9.0
 
     # Controlled randomness prevents hard deterministic boundaries.
-    jitter = rng.uniform(-5.0, 5.0)
+    jitter = rng.uniform(-2.0, 2.0)  # Reduced noise range to improve ML learnability while maintaining realism
     return clamp((raw_score + jitter) * no_path_penalty, 0, 100)
 
 
 def assign_risk_level(score: float, rng: random.Random) -> str:
     """Assign LOW/MEDIUM/HIGH probabilistically from internal score."""
 
-    normalized = clamp(score / 100.0, 0.0, 1.0)
-    high_logit = -1.70 + 3.75 * normalized
-    low_logit = -1.55 + 3.65 * (1.0 - normalized)
-    medium_logit = 1.05 - 3.00 * abs(normalized - 0.53)
-
-    # Mild priors keep distribution realistic without forcing strict balancing.
-    priors = {"LOW": 0.95, "MEDIUM": 1.10, "HIGH": 0.95}
-    weights = {
-        "LOW": exp(low_logit) * priors["LOW"],
-        "MEDIUM": exp(medium_logit) * priors["MEDIUM"],
-        "HIGH": exp(high_logit) * priors["HIGH"],
-    }
-
-    total = sum(weights.values())
-    probabilities = [weights[level] / total for level in RISK_LEVELS]
-    return rng.choices(RISK_LEVELS, weights=probabilities, k=1)[0]
+    # Hybrid labeling: clear LOW/HIGH boundaries with controlled randomness in MEDIUM
+    # to balance realism and model learnability
+    if score < 35:
+        return "LOW"
+    if score > 70:
+        return "HIGH"
+    return rng.choices(["MEDIUM", "HIGH"], weights=[0.7, 0.3], k=1)[0]
 
 
 def generate_scenario(scenario_index: int, rng: random.Random) -> Dict[str, int | float | str]:
