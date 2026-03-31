@@ -55,7 +55,8 @@ def test_predict_compromise_returns_expected_structure():
 
 
 def test_probabilities_sum_to_one_within_tolerance():
-    probabilities = ml_engine.predict_probabilities(_valid_input_payload())
+    features_df = ml_engine.prepare_features(_valid_input_payload())
+    probabilities = ml_engine.predict_probabilities(features_df)
     total = sum(probabilities.values())
 
     assert pytest.approx(1.0, abs=1e-3) == total

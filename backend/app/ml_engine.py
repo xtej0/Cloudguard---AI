@@ -7,6 +7,11 @@ import joblib
 import numpy as np
 import pandas as pd
 
+try:
+    import shap
+except Exception:  # pragma: no cover - import environment dependent
+    shap = None
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODELS_DIR = PROJECT_ROOT / "models"
@@ -40,12 +45,14 @@ FEATURE_ENCODERS: dict[str, Any] = {}
 TARGET_ENCODER: Any | None = None
 FEATURE_COLUMNS: list[str] = TRAINING_FEATURE_COLUMNS.copy()
 MODEL_LOAD_ERROR: str | None = None
+EXPLAINER: Any | None = None
+EXPLAINER_LOAD_ERROR: str | None = None
 
 
 def load_model_artifacts() -> None:
     """Load model + encoders once and cache globally for inference calls."""
 
-    global MODEL, FEATURE_ENCODERS, TARGET_ENCODER, FEATURE_COLUMNS, MODEL_LOAD_ERROR
+    global MODEL, FEATURE_ENCODERS, TARGET_ENCODER, FEATURE_COLUMNS, MODEL_LOAD_ERROR, EXPLAINER, EXPLAINER_LOAD_ERROR
 
     try:
         if not MODEL_PATH.exists():
@@ -64,6 +71,16 @@ def load_model_artifacts() -> None:
         else:
             FEATURE_COLUMNS = TRAINING_FEATURE_COLUMNS.copy()
 
+        EXPLAINER = None
+        EXPLAINER_LOAD_ERROR = None
+        if shap is not None:
+            try:
+                EXPLAINER = shap.TreeExplainer(MODEL)
+            except Exception as exc:
+                EXPLAINER_LOAD_ERROR = str(exc)
+        else:
+            EXPLAINER_LOAD_ERROR = "SHAP is not installed or failed to import"
+
         MODEL_LOAD_ERROR = None
     except Exception as exc:  # pragma: no cover - exercised via fallback tests
         MODEL_LOAD_ERROR = str(exc)
@@ -71,6 +88,8 @@ def load_model_artifacts() -> None:
         FEATURE_ENCODERS = {}
         TARGET_ENCODER = None
         FEATURE_COLUMNS = TRAINING_FEATURE_COLUMNS.copy()
+        EXPLAINER = None
+        EXPLAINER_LOAD_ERROR = None
 
 
 def _normalize_input_value(value: Any) -> Any:
@@ -152,13 +171,16 @@ def interpret_prediction(prediction: Any) -> str:
         return str(prediction)
 
 
-def predict_probabilities(raw_input: dict[str, Any]) -> dict[str, float]:
-    """Return class probabilities by label, or a safe fallback when unavailable."""
+def predict_probabilities(features: pd.DataFrame) -> dict[str, float]:
+    """Return class probabilities from precomputed features.
+
+    This avoids duplicate feature preparation per request by reusing the same
+    dataframe across prediction, probabilities, and explainability steps.
+    """
 
     if MODEL is None:
         raise RuntimeError(MODEL_LOAD_ERROR or "Model is not loaded")
 
-    features = prepare_features(raw_input)
     class_labels = [str(label) for label in getattr(TARGET_ENCODER, "classes_", ["LOW", "MEDIUM", "HIGH"])]
 
     if hasattr(MODEL, "predict_proba"):
@@ -173,6 +195,86 @@ def predict_probabilities(raw_input: dict[str, Any]) -> dict[str, float]:
     fallback = {label: 0.0 for label in class_labels}
     fallback[predicted_label] = 1.0
     return fallback
+
+
+def _resolve_predicted_class_index(raw_prediction: Any, predicted_label: str) -> int | None:
+    """Resolve class index for SHAP extraction using model/encoder class ordering."""
+
+    model_classes = np.asarray(getattr(MODEL, "classes_", []))
+    if model_classes.size:
+        try:
+            predicted_value = np.asarray(raw_prediction).reshape(-1)[0]
+            matches = np.where(model_classes == predicted_value)[0]
+            if matches.size:
+                return int(matches[0])
+        except Exception:
+            pass
+
+    target_classes = [str(label) for label in getattr(TARGET_ENCODER, "classes_", [])]
+    if predicted_label in target_classes:
+        return target_classes.index(predicted_label)
+
+    return None
+
+
+def get_feature_importance(features: pd.DataFrame, predicted_class_index: int | None) -> list[dict[str, Any]]:
+    """Compute top SHAP feature impacts for the predicted class.
+
+    Returns an empty list when explainability is unavailable or computation fails.
+    """
+
+    if EXPLAINER is None or predicted_class_index is None:
+        return []
+
+    try:
+        shap_values = EXPLAINER.shap_values(features)
+        contributions: np.ndarray | None = None
+
+        if isinstance(shap_values, list):
+            if 0 <= predicted_class_index < len(shap_values):
+                class_values = np.asarray(shap_values[predicted_class_index])
+                if class_values.ndim == 2:
+                    contributions = class_values[0]
+                elif class_values.ndim == 1:
+                    contributions = class_values
+        else:
+            values = np.asarray(shap_values)
+            if values.ndim == 3:
+                # Common shape: (n_samples, n_features, n_classes)
+                if values.shape[2] > predicted_class_index:
+                    contributions = values[0, :, predicted_class_index]
+                # Alternate shape: (n_classes, n_samples, n_features)
+                elif values.shape[0] > predicted_class_index:
+                    class_values = values[predicted_class_index]
+                    contributions = class_values[0] if class_values.ndim == 2 else class_values
+            elif values.ndim == 2:
+                contributions = values[0]
+            elif values.ndim == 1:
+                contributions = values
+
+        if contributions is None:
+            return []
+
+        feature_names = list(features.columns)
+        if len(contributions) != len(feature_names):
+            return []
+
+        ranked = sorted(
+            zip(feature_names, contributions),
+            key=lambda item: abs(float(item[1])),
+            reverse=True,
+        )[:5]
+
+        return [
+            {
+                "feature": feature,
+                "impact": round(float(impact), 4),
+                "direction": "increase" if float(impact) >= 0 else "decrease",
+            }
+            for feature, impact in ranked
+        ]
+    except Exception:
+        return []
 
 
 def predict_compromise(raw_input: dict[str, Any]) -> dict[str, Any]:
@@ -190,7 +292,9 @@ def predict_compromise(raw_input: dict[str, Any]) -> dict[str, Any]:
         features = prepare_features(raw_input)
         raw_prediction = MODEL.predict(features)[0]
         predicted_label = interpret_prediction(raw_prediction)
-        probabilities = predict_probabilities(raw_input)
+        probabilities = predict_probabilities(features)
+        predicted_class_index = _resolve_predicted_class_index(raw_prediction, predicted_label)
+        feature_importance = get_feature_importance(features, predicted_class_index)
 
         confidence = float(probabilities.get(predicted_label, 0.0))
 
@@ -198,12 +302,14 @@ def predict_compromise(raw_input: dict[str, Any]) -> dict[str, Any]:
             "predicted_label": str(predicted_label),
             "confidence": round(confidence, 4),
             "probabilities": {k: round(float(v), 4) for k, v in probabilities.items()},
+            "feature_importance": feature_importance,
         }
     except Exception as exc:
         return {
             "predicted_label": "UNKNOWN",
             "confidence": 0.0,
             "probabilities": {},
+            "feature_importance": [],
             "error": str(exc),
         }
 
