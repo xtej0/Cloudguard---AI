@@ -43,6 +43,7 @@ class FinalResponse(BaseModel):
     prediction: PredictionData
     summary: Dict[str, Any]
     mitigations: List[str]
+<<<<<<< HEAD
 
 
 from app.schemas.prediction import PredictionRequest, PredictionResponse
@@ -59,3 +60,5 @@ __all__ = [
     "PredictionRequest",
     "PredictionResponse",
 ]
+=======
+>>>>>>> 9c7f216 (Integrate attack graph and ML next-target prediction)
