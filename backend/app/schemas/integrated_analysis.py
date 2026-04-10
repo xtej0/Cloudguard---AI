@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PredictionSummary(BaseModel):
@@ -44,3 +44,41 @@ class IntegratedAnalysisResponse(BaseModel):
     candidate_next_hops: list[CandidateNextHop] = Field(default_factory=list)
     predicted_next_target: PredictedNextTarget | None = None
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "asset_name": "Web Server VM",
+                "current_risk": {
+                    "risk_score": 72.4,
+                    "risk_level": "HIGH",
+                    "explanation": "Internet exposure and weak IAM increase risk.",
+                },
+                "candidate_next_hops": [
+                    {
+                        "asset_name": "Application Server VM",
+                        "asset_type": "VM",
+                        "path_length": 1,
+                        "reachability_score": 1.0,
+                        "prediction": {
+                            "predicted_label": "HIGH",
+                            "confidence": 0.78,
+                            "probabilities": {"HIGH": 0.78, "MEDIUM": 0.18, "LOW": 0.04},
+                        },
+                        "combined_score": 0.81,
+                    }
+                ],
+                "predicted_next_target": {
+                    "asset_name": "Application Server VM",
+                    "asset_type": "VM",
+                    "predicted_label": "HIGH",
+                    "confidence": 0.78,
+                    "combined_score": 0.81,
+                    "reason": "Selected as the highest-scoring reachable compromise candidate.",
+                },
+                "feature_importance": [
+                    {"feature": "exposure_score", "impact": 0.31, "direction": "increase"}
+                ],
+            }
+        }
+    )

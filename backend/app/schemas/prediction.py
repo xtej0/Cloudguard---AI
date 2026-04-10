@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PredictionRequest(BaseModel):
@@ -110,4 +110,17 @@ class PredictionResponse(BaseModel):
                 {"feature": "vulnerability_count", "impact": 0.23, "direction": "increase"}
             ]
         },
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "predicted_label": "HIGH",
+                "confidence": 0.87,
+                "probabilities": {"HIGH": 0.87, "MEDIUM": 0.1, "LOW": 0.03},
+                "feature_importance": [
+                    {"feature": "vulnerability_count", "impact": 0.23, "direction": "increase"}
+                ],
+            }
+        }
     )

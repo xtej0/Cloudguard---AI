@@ -112,11 +112,12 @@ def fetch_important_asset_names() -> list[str]:
     WHERE asset.name IS NOT NULL
       AND NOT asset:Internet
       AND NOT asset:User
+    WITH asset, properties(asset) AS props
     WITH asset,
-         coalesce(toLower(toString(asset.criticality)), toLower(toString(asset.asset_criticality)), '') AS crit,
-         coalesce(toLower(toString(asset.severity)), toLower(toString(asset.vulnerability_severity)), '') AS sev,
-         coalesce(toLower(toString(asset.exposure_level)), toLower(toString(asset.exposure_weight)), '') AS exp,
-         coalesce(asset.internet_exposed, false) AS internet_exposed
+        coalesce(toLower(toString(props['criticality'])), toLower(toString(props['asset_criticality'])), '') AS crit,
+        coalesce(toLower(toString(props['severity'])), toLower(toString(props['vulnerability_severity'])), '') AS sev,
+        coalesce(toLower(toString(props['exposure_level'])), toLower(toString(props['exposure_weight'])), '') AS exp,
+        coalesce(toBoolean(props['internet_exposed']), false) AS internet_exposed
     OPTIONAL MATCH (asset)--(neighbor)
     WITH asset, crit, sev, exp, internet_exposed, count(neighbor) AS degree
     WHERE crit IN ['critical', 'high']
