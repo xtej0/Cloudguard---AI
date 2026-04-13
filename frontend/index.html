@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CloudGuard AI</title>
+    <link rel="stylesheet" href="./css/styles.css" />
+    <script src="https://unpkg.com/cytoscape@3.30.3/dist/cytoscape.min.js" defer></script>
+    <script src="./js/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-layout">
+      <header class="app-header">
+        <h1>CloudGuard AI</h1>
+      </header>
+
+      <aside class="sidebar" aria-label="API Actions">
+        <h2>Actions</h2>
+        <button type="button" id="btnAttackPath">/attack-path</button>
+        <button type="button" id="btnAllPaths">/all-paths</button>
+        <button type="button" id="btnRiskScore">/risk-score</button>
+        <button type="button" id="btnPredictCompromise">/predict-compromise</button>
+        <button type="button" id="btnAssetAnalysis">/asset-analysis</button>
+      </aside>
+
+      <main class="content" aria-label="Graph and status panel">
+        <section class="graph-panel" aria-label="Attack graph">
+          <h2>Attack Graph</h2>
+          <div id="graph" role="img" aria-label="Attack graph visualization"></div>
+        </section>
+
+        <section class="status-panel" aria-label="API status logs">
+          <h2>Status</h2>
+          <pre id="statusLog">Waiting for actions...</pre>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
