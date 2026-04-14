@@ -23,16 +23,41 @@
         <button type="button" id="btnAssetAnalysis">/asset-analysis</button>
       </aside>
 
-      <main class="content" aria-label="Graph and status panel">
-        <section class="graph-panel" aria-label="Attack graph">
+      <main class="content" aria-label="CloudGuard dashboard">
+        <div class="dashboard-row top-row" aria-label="Top dashboard panels">
+          <section class="dashboard-card" aria-label="Risk dashboard panel">
+            <h2>Risk Dashboard</h2>
+            <p>Risk score will appear here</p>
+          </section>
+
+          <section class="dashboard-card" aria-label="Prediction panel">
+            <h2>Prediction Panel</h2>
+            <p>Predicted targets will appear here</p>
+          </section>
+        </div>
+
+        <section class="dashboard-card graph-card" aria-label="Attack graph">
           <h2>Attack Graph</h2>
-          <div id="graph" role="img" aria-label="Attack graph visualization"></div>
+          <div id="cy" role="img" aria-label="Attack graph visualization">
+            <div class="graph-placeholder">Graph will render here</div>
+          </div>
         </section>
 
-        <section class="status-panel" aria-label="API status logs">
-          <h2>Status</h2>
-          <pre id="statusLog">Waiting for actions...</pre>
-        </section>
+        <div class="dashboard-row bottom-row" aria-label="Bottom dashboard panels">
+          <section class="dashboard-card" aria-label="Asset details panel">
+            <h2>Asset Details</h2>
+            <p>Select a node to view details</p>
+          </section>
+
+          <section class="dashboard-card" aria-label="Mitigation suggestions panel">
+            <h2>Mitigation Suggestions</h2>
+            <p>Recommendations will appear here</p>
+          </section>
+        </div>
+
+        <div id="status-output" class="status-bar" aria-live="polite">
+          System ready. Waiting for analysis updates.
+        </div>
       </main>
     </div>
   </body>

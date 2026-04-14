@@ -2,6 +2,7 @@ import logging
 import time
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.attack_paths import router as attack_risk_router
 from app.routes.prediction import router as prediction_router
@@ -15,6 +16,14 @@ app = FastAPI(
     title="CloudGuard AI",
     description="Cloud Attack Path & Risk Prediction API",
     version="1.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
