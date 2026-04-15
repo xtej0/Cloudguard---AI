@@ -248,6 +248,122 @@ async function fetchAttackPath() {
   }
 }
 
+async function fetchRiskScore() {
+  updateStatus("Loading risk score...", "loading");
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/risk-score`, {
+      method: "GET"
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("Risk score response:", data);
+
+    const topAssets = data.risk?.top_assets || [];
+    const riskDashboardPanel = document.querySelector('[aria-label="Risk dashboard panel"]');
+
+    if (riskDashboardPanel) {
+      if (topAssets.length === 0) {
+        riskDashboardPanel.innerHTML = `
+          <h3>Top Risk Assets</h3>
+          <p>No high risk assets found</p>
+        `;
+      } else {
+        const assetItems = topAssets
+          .map((asset) => {
+            const name = asset.asset || asset.name || "Unknown";
+            const score = asset.risk_score || asset.score || "N/A";
+            return `<li>${name} (Risk: ${score})</li>`;
+          })
+          .join("");
+
+        riskDashboardPanel.innerHTML = `
+          <h3>Top Risk Assets</h3>
+          <ul>${assetItems}</ul>
+        `;
+      }
+    }
+
+    updateStatus("Risk score loaded", "success");
+  } catch (error) {
+    console.error(error);
+    updateStatus("Failed to load risk score", "error");
+  }
+}
+
+async function fetchPrediction() {
+  updateStatus("Loading predictions...", "loading");
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/predict-compromise`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        asset_type: "VM",
+        internet_exposed: 1,
+        public_access: 1,
+        has_critical_data: 1,
+        weak_iam: 1,
+        lateral_movement_possible: 1,
+        privilege_escalation_possible: 1,
+        open_port_count: 5,
+        vulnerability_count: 10,
+        critical_vulnerability_count: 3,
+        misconfiguration_count: 2,
+        attack_path_count: 1,
+        shortest_path_length: 3,
+        exposure_score: 80,
+        identity_risk_score: 70,
+        network_risk_score: 75
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("Prediction response:", data);
+
+    const panel = document.querySelector('[aria-label="Prediction panel"]');
+    if (!panel) {
+      return;
+    }
+
+    if (!data.predicted_label) {
+      panel.innerHTML = `
+        <h3>Predicted Risk Level</h3>
+        <p>No prediction available</p>
+      `;
+      return;
+    }
+
+    const label = data.predicted_label;
+    let color = "#4caf50";
+
+    if (label === "HIGH") color = "#ff4d4f";
+    if (label === "MEDIUM") color = "#faad14";
+
+    panel.innerHTML = `
+      <h3>Predicted Risk Level</h3>
+      <p style="color:${color}; font-weight:bold;">
+        ${label}
+      </p>
+    `;
+
+    updateStatus("Predictions loaded", "success");
+  } catch (error) {
+    console.error(error);
+    updateStatus("Failed to load predictions", "error");
+  }
+}
+
 function initGraph() {
   const graphContainer = document.getElementById("cy");
 
@@ -269,5 +385,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (attackPathItem) {
     attackPathItem.addEventListener("click", fetchAttackPath);
+  }
+
+  const riskScoreItem = Array.from(sidebarButtons).find(
+    (button) => button.textContent?.trim() === "/risk-score"
+  );
+
+  if (riskScoreItem) {
+    riskScoreItem.addEventListener("click", fetchRiskScore);
+  }
+
+  const predictCompromiseItem = Array.from(sidebarButtons).find(
+    (button) => button.textContent?.trim() === "/predict-compromise"
+  );
+
+  if (predictCompromiseItem) {
+    predictCompromiseItem.addEventListener("click", fetchPrediction);
   }
 });

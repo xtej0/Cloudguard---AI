@@ -160,6 +160,17 @@ def build_all_paths_response(
 
 def build_risk_score_response(top_assets: list[dict[str, Any]]) -> dict[str, Any]:
     """Build response payload for top asset risk scores endpoint."""
+    # Transform top_assets to include both asset_name (for internal use) and asset (for frontend)
+    transformed_assets = [
+        {
+            "asset_name": asset["asset_name"],
+            "asset": asset["asset_name"],
+            "risk_score": asset.get("risk_score"),
+            "risk_level": asset.get("risk_level"),
+        }
+        for asset in top_assets
+    ]
+    
     summary = {
         "highest_risk": top_assets[0]["asset_name"] if top_assets else None,
         "overall_risk_level": top_assets[0]["risk_level"] if top_assets else None,
@@ -169,7 +180,7 @@ def build_risk_score_response(top_assets: list[dict[str, Any]]) -> dict[str, Any
 
     return build_attack_risk_summary_response(
         graph={"nodes": [], "edges": []},
-        risk_top_assets=top_assets,
+        risk_top_assets=transformed_assets,
         summary=summary,
         prediction=predict_next_targets(top_assets=top_assets),
         mitigations=get_mitigation_recommendations(),
