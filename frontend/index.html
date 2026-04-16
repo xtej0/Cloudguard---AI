@@ -24,6 +24,7 @@
       </aside>
 
       <main class="content" aria-label="CloudGuard dashboard">
+
         <div class="dashboard-row top-row" aria-label="Top dashboard panels">
           <section class="dashboard-card" aria-label="Risk dashboard panel">
             <h2>Risk Dashboard</h2>
@@ -36,8 +37,19 @@
           </section>
         </div>
 
+        <!-- 🔥 GRAPH SECTION UPDATED -->
         <section class="dashboard-card graph-card" aria-label="Attack graph">
           <h2>Attack Graph</h2>
+
+          <!-- Graph Controls -->
+          <div class="graph-controls">
+            <button type="button" id="zoom-in">+</button>
+            <button type="button" id="zoom-out">−</button>
+            <button type="button" id="fit-graph">Fit</button>
+            <button type="button" id="reset-graph">Reset</button>
+          </div>
+
+          <!-- Graph Container -->
           <div id="cy" role="img" aria-label="Attack graph visualization">
             <div class="graph-placeholder">Graph will render here</div>
           </div>

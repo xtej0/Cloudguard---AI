@@ -32,8 +32,16 @@ function renderGraph(data) {
 
   const edges = Array.isArray(graph.edges) ? graph.edges : [];
 
+  const positionedNodes = graph.nodes.map((node, index) => ({
+    ...node,
+    position: {
+      x: 100 + (index * 200),
+      y: 200
+    }
+  }));
+
   const elements = [
-    ...graph.nodes,
+    ...positionedNodes,
     ...edges
   ];
 
@@ -50,42 +58,155 @@ function renderGraph(data) {
         selector: "node",
         style: {
           "background-color": "#4da6ff",
-          "width": 42,
-          "height": 42,
-          "border-width": 2,
-          "border-color": "#ffffff",
-          "shadow-blur": 14,
+          "width": 54,
+          "height": 54,
+          "border-width": 3,
+          "border-color": "#dbeafe",
+          "shadow-blur": 12,
           "shadow-color": "#4da6ff",
-          "shadow-opacity": 0.45,
+          "shadow-opacity": 0.35,
           "shadow-offset-x": 0,
           "shadow-offset-y": 0,
           "label": "data(label)",
           "color": "#fff",
           "text-valign": "center",
           "text-halign": "center",
-          "font-size": "10px"
+          "font-size": "10px",
+          "text-outline-width": 2,
+          "text-outline-color": "#0f172a",
+          "transition-property": "background-color, border-color, width, height, opacity, line-color, target-arrow-color",
+          "transition-duration": "120ms"
+        }
+      },
+      {
+        selector: "node[type = \"Internet\"]",
+        style: {
+          "background-color": "#ef4444",
+          "border-color": "#fecaca",
+          "shadow-color": "#ef4444"
+        }
+      },
+      {
+        selector: "node[type = \"VM\"], node[type = \"Server\"]",
+        style: {
+          "background-color": "#3b82f6",
+          "border-color": "#bfdbfe",
+          "shadow-color": "#3b82f6"
+        }
+      },
+      {
+        selector: "node[type = \"Database\"]",
+        style: {
+          "background-color": "#8b5cf6",
+          "border-color": "#e9d5ff",
+          "shadow-color": "#8b5cf6"
         }
       },
       {
         selector: "edge",
         style: {
-          "width": 3,
-          "line-color": "#00ffcc",
-          "target-arrow-color": "#00ffcc",
+          "width": 3.5,
+          "line-color": "#6b7280",
+          "target-arrow-color": "#6b7280",
           "target-arrow-shape": "triangle",
-          "arrow-scale": 1.25,
+          "arrow-scale": 1.15,
           "curve-style": "bezier",
           "label": "data(label)",
           "font-size": "8px",
-          "color": "#ccc"
+          "color": "#cbd5e1",
+          "text-background-color": "#0f172a",
+          "text-background-opacity": 0.85,
+          "text-background-padding": 2,
+          "transition-property": "line-color, target-arrow-color, width, opacity",
+          "transition-duration": "120ms"
+        }
+      },
+      {
+        selector: "edge[label = \"EXPOSED_TO\"]",
+        style: {
+          "line-color": "#ef4444",
+          "target-arrow-color": "#ef4444"
+        }
+      },
+      {
+        selector: "edge[label = \"CONNECTS_TO\"]",
+        style: {
+          "line-color": "#22c55e",
+          "target-arrow-color": "#22c55e"
+        }
+      },
+      {
+        selector: ".dimmed",
+        style: {
+          opacity: 0.18
+        }
+      },
+      {
+        selector: ".selected",
+        style: {
+          "background-color": "#facc15",
+          "border-color": "#fde68a",
+          "border-width": 5,
+          width: 66,
+          height: 66,
+          "shadow-blur": 18,
+          "shadow-color": "#facc15",
+          "shadow-opacity": 0.75,
+          "z-index": 10
+        }
+      },
+      {
+        selector: ".neighbor",
+        style: {
+          opacity: 1,
+          "border-color": "#fbbf24",
+          "border-width": 4
+        }
+      },
+      {
+        selector: ".hovered",
+        style: {
+          width: 68,
+          height: 68,
+          "border-width": 4,
+          "border-color": "#ffffff",
+          "shadow-blur": 18,
+          "shadow-opacity": 0.8,
+          "z-index": 12
+        }
+      },
+      {
+        selector: ".highlighted-edge",
+        style: {
+          width: 5,
+          "line-color": "#facc15",
+          "target-arrow-color": "#facc15",
+          opacity: 1
+        }
+      },
+      {
+        selector: ".hover-highlighted-edge",
+        style: {
+          width: 4.5,
+          "line-color": "#60a5fa",
+          "target-arrow-color": "#60a5fa",
+          opacity: 1
+        }
+      },
+      {
+        selector: ".pulse",
+        style: {
+          "background-color": "#00ffcc",
+          "border-color": "#a7f3d0",
+          "shadow-color": "#00ffcc",
+          "shadow-opacity": 0.75,
+          "shadow-blur": 16
         }
       }
     ],
 
     layout: {
-      name: "breadthfirst",
-      directed: true,
-      padding: 10
+      name: "preset"
     }
   });
 
@@ -93,24 +214,90 @@ function renderGraph(data) {
     return;
   }
 
-  const defaultNodeStyle = {
-    backgroundColor: "#4da6ff",
-    borderWidth: 2,
-    borderColor: "#ffffff",
-    shadowColor: "#4da6ff",
-    shadowOpacity: 0.45
-  };
-  const selectedNodeStyle = {
-    backgroundColor: "#ffcc00",
-    borderWidth: 4,
-    borderColor: "#ffe49b",
-    shadowColor: "#ffcc00",
-    shadowOpacity: 0.65
-  };
-  let selectedNodeId = null;
-
   window.cloudguardCy = cy;
   document.querySelector(".graph-placeholder")?.remove();
+
+
+  const clearHoverState = () => {
+    cy.batch(() => {
+      cy.nodes().removeClass("hovered");
+      cy.edges().removeClass("hover-highlighted-edge");
+    });
+  };
+
+  const clearSelectionState = () => {
+    cy.batch(() => {
+      cy.elements().removeClass("selected neighbor dimmed highlighted-edge");
+    });
+  };
+
+  const applySelectionState = (node) => {
+    const selectedNeighborhood = node.closedNeighborhood();
+    const selectedNodes = selectedNeighborhood.nodes();
+    const selectedEdges = node.connectedEdges();
+
+    cy.batch(() => {
+      cy.elements().removeClass("selected neighbor dimmed highlighted-edge");
+      cy.nodes().addClass("dimmed");
+      cy.edges().addClass("dimmed");
+      selectedNodes.removeClass("dimmed");
+      selectedEdges.removeClass("dimmed");
+      node.addClass("selected");
+      selectedNodes.not(node).addClass("neighbor");
+      selectedEdges.addClass("highlighted-edge");
+    });
+  };
+
+  cy.on("mouseover", "node", function (evt) {
+    const node = evt.target;
+
+    cy.batch(() => {
+      node.addClass("hovered");
+      node.connectedEdges().addClass("hover-highlighted-edge");
+    });
+  });
+
+  cy.on("mouseout", "node", function (evt) {
+    const node = evt.target;
+
+    cy.batch(() => {
+      node.removeClass("hovered");
+      node.connectedEdges().removeClass("hover-highlighted-edge");
+    });
+  });
+
+  cy.on("tap", "node", function (evt) {
+    const node = evt.target;
+    const nodeData = node.data();
+    const assetDetailsPanel = document.querySelector('[aria-label="Asset details panel"]');
+
+    applySelectionState(node);
+
+    cy.animate(
+      {
+        center: { eles: node },
+        zoom: 1.35
+      },
+      {
+        duration: 300
+      }
+    );
+
+    if (!assetDetailsPanel) {
+      return;
+    }
+
+    const assetLabel = nodeData.label || nodeData.id || "Unknown";
+    const assetId = nodeData.id || "Unknown";
+    const assetType = nodeData.type || "Unknown";
+
+    assetDetailsPanel.innerHTML = `
+      <h3>Asset Details</h3>
+      <p><strong>ID:</strong> ${assetId}</p>
+      <p><strong>Label:</strong> ${assetLabel}</p>
+      <p><strong>Type:</strong> ${assetType}</p>
+    `;
+  });
 
   // Subtle, non-blocking attack path pulse based on returned node order.
   graph.nodes.forEach((graphNode, index) => {
@@ -129,76 +316,12 @@ function renderGraph(data) {
         return;
       }
 
-      cyNode.style({
-        "background-color": "#00ffcc",
-        "shadow-color": "#00ffcc",
-        "shadow-opacity": 0.75
-      });
+      cyNode.addClass("pulse");
 
       setTimeout(() => {
-        const isSelected = selectedNodeId === nodeId;
-        cyNode.style({
-          "background-color": isSelected ? selectedNodeStyle.backgroundColor : defaultNodeStyle.backgroundColor,
-          "border-width": isSelected ? selectedNodeStyle.borderWidth : defaultNodeStyle.borderWidth,
-          "border-color": isSelected ? selectedNodeStyle.borderColor : defaultNodeStyle.borderColor,
-          "shadow-color": isSelected ? selectedNodeStyle.shadowColor : defaultNodeStyle.shadowColor,
-          "shadow-opacity": isSelected ? selectedNodeStyle.shadowOpacity : defaultNodeStyle.shadowOpacity
-        });
+        cyNode.removeClass("pulse");
       }, 220);
     }, index * 240);
-  });
-
-  cy.on("tap", "node", function (evt) {
-    const node = evt.target;
-    const nodeData = node.data();
-    const assetDetailsPanel = document.querySelector('[aria-label="Asset details panel"]');
-
-    if (selectedNodeId) {
-      const prevNode = cy.getElementById(selectedNodeId);
-      if (prevNode && !prevNode.empty()) {
-        prevNode.style({
-          "background-color": defaultNodeStyle.backgroundColor,
-          "border-width": defaultNodeStyle.borderWidth,
-          "border-color": defaultNodeStyle.borderColor,
-          "shadow-color": defaultNodeStyle.shadowColor,
-          "shadow-opacity": defaultNodeStyle.shadowOpacity
-        });
-      }
-    }
-
-    selectedNodeId = node.id();
-    node.style({
-      "background-color": selectedNodeStyle.backgroundColor,
-      "border-width": selectedNodeStyle.borderWidth,
-      "border-color": selectedNodeStyle.borderColor,
-      "shadow-color": selectedNodeStyle.shadowColor,
-      "shadow-opacity": selectedNodeStyle.shadowOpacity
-    });
-
-    cy.animate(
-      {
-        center: { eles: node },
-        zoom: 1.35
-      },
-      {
-        duration: 300
-      }
-    );
-
-    if (!assetDetailsPanel) {
-      return;
-    }
-
-    const assetName = nodeData.label || nodeData.id || "Unknown";
-    const assetId = nodeData.id || "Unknown";
-    const assetType = nodeData.type || "Unknown";
-
-    assetDetailsPanel.innerHTML = `
-      <h3>Asset Details</h3>
-      <p><strong>Name:</strong> ${assetName}</p>
-      <p><strong>ID:</strong> ${assetId}</p>
-      <p><strong>Type:</strong> ${assetType}</p>
-    `;
   });
 }
 
@@ -373,8 +496,38 @@ function initGraph() {
   }
 }
 
+function zoomIn() {
+  const cy = window.cloudguardCy;
+  if (!cy) return;
+  cy.zoom(cy.zoom() * 1.2);
+}
+
+function zoomOut() {
+  const cy = window.cloudguardCy;
+  if (!cy) return;
+  cy.zoom(cy.zoom() * 0.8);
+}
+
+function fitGraph() {
+  const cy = window.cloudguardCy;
+  if (!cy) return;
+  cy.fit(undefined, 40);
+}
+
+function resetGraph() {
+  const cy = window.cloudguardCy;
+  if (!cy) return;
+  cy.zoom(1);
+  cy.center();
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initGraph();
+
+  document.getElementById("zoom-in")?.addEventListener("click", zoomIn);
+  document.getElementById("zoom-out")?.addEventListener("click", zoomOut);
+  document.getElementById("fit-graph")?.addEventListener("click", fitGraph);
+  document.getElementById("reset-graph")?.addEventListener("click", resetGraph);
 
   updateStatus(`Frontend ready. API base URL: ${API_BASE_URL}`);
 
