@@ -3,8 +3,76 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
+from app.builders.response_builder import build_attack_path_response, build_attack_risk_summary_response
 from app.models.graph_schema import Graph, Node, NodeType
 from app.neo4j_config import driver
+from app.services.summary_service import utc_now_iso
+from app.utils.graph_formatter import make_edge, make_node
+
+
+def generate_attack_path(
+    start: str = "Internet",
+    target: str = "Database Server",
+    start_exists: bool | None = None,
+    target_exists: bool | None = None,
+) -> dict[str, Any]:
+    """Return a short linear attack path graph."""
+    nodes = [start, "Web Server VM", "Application Server VM", target]
+    relationships = ["EXPOSED_TO", "CONNECTS_TO", "CONNECTS_TO"]
+    return build_attack_path_response(
+        nodes,
+        relationships,
+        start=start,
+        target=target,
+        start_exists=start_exists,
+        target_exists=target_exists,
+    )
+
+
+def generate_full_graph(
+    start: str = "Internet",
+    target: str = "Database Server",
+    start_exists: bool | None = None,
+    target_exists: bool | None = None,
+) -> dict[str, Any]:
+    """Return the full infrastructure graph with all major connections."""
+    graph_nodes = [
+        make_node(node_id="Internet", label="Internet", node_type="Internet"),
+        make_node(node_id="Web Server VM", label="Web Server VM", node_type="VM"),
+        make_node(node_id="Application Server VM", label="Application Server VM", node_type="VM"),
+        make_node(node_id="Database Server", label="Database Server", node_type="Database"),
+        make_node(node_id="Storage Bucket", label="Storage Bucket", node_type="Bucket"),
+        make_node(node_id="IAM Role", label="IAM Role", node_type="IAMRole"),
+        make_node(node_id="User", label="User", node_type="User"),
+    ]
+
+    graph_edges = [
+        make_edge(source="Internet", target="Web Server VM", label="EXPOSED_TO"),
+        make_edge(source="Web Server VM", target="Application Server VM", label="CONNECTS_TO"),
+        make_edge(source="Application Server VM", target="Database Server", label="CONNECTS_TO"),
+        make_edge(source="Web Server VM", target="Storage Bucket", label="CONNECTS_TO"),
+        make_edge(source="Application Server VM", target="IAM Role", label="CAN_ASSUME_ROLE"),
+        make_edge(source="IAM Role", target="Database Server", label="HAS_ACCESS"),
+        make_edge(source="User", target="IAM Role", label="HAS_ACCESS"),
+        make_edge(source="Database Server", target="Storage Bucket", label="STORES_DATA_IN"),
+    ]
+
+    return build_attack_risk_summary_response(
+        graph={"nodes": graph_nodes, "edges": graph_edges},
+        risk_top_assets=[],
+        summary={
+            "start_asset": start,
+            "target_asset": target,
+            "total_nodes": len(graph_nodes),
+            "total_edges": len(graph_edges),
+            "total_paths": 1,
+            "path_length": 4,
+            "message": "Full infrastructure graph loaded",
+            "generated_at": utc_now_iso(),
+        },
+        prediction=[],
+        mitigations=[],
+    )
 
 
 def get_asset_existence(start: str, target: str) -> tuple[bool, bool]:
@@ -28,7 +96,7 @@ def get_asset_existence(start: str, target: str) -> tuple[bool, bool]:
 def get_shortest_attack_path(start: str, target: str) -> dict[str, Any] | None:
     """Return shortest attack path data between two assets or None when no path exists."""
     query = """
-    MATCH p = shortestPath((a {name:$start})-[*]->(b {name:$target}))
+    MATCH p = shortestPath((a {name:$start})-[*..5]->(b {name:$target}))
     RETURN nodes(p) as nodes, relationships(p) as rels
     """
 

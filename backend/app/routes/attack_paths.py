@@ -8,17 +8,15 @@ from fastapi import APIRouter, HTTPException
 from neo4j.exceptions import AuthError, Neo4jError, ServiceUnavailable
 
 from app.builders.response_builder import (
-    build_all_paths_response,
-    build_attack_path_response,
     build_attack_risk_response,
     build_risk_score_response,
     build_single_asset_risk_response,
 )
 from app.schemas import FinalResponse
 from app.services.attack_graph_service import (
-    get_all_attack_paths,
+    generate_attack_path,
+    generate_full_graph,
     get_asset_existence,
-    get_shortest_attack_path,
 )
 from app.services.attack_risk_service import get_attack_risk_summary
 from app.services.risk_service import get_single_asset_risk_data, get_top_asset_risk_scores
@@ -56,7 +54,7 @@ def _mark_no_path(response: dict) -> dict:
     summary="Get shortest attack path",
     description="Returns the shortest directed attack path between two assets and a unified summary payload.",
 )
-def get_attack_path(start: str, target: str):
+def attack_path(start: str, target: str):
     """Return shortest attack path between start and target assets.
 
     Example request:
@@ -84,23 +82,9 @@ def get_attack_path(start: str, target: str):
         validated_start = _validated_asset_name(start, "asset")
         validated_target = _validated_asset_name(target, "asset")
 
-        path = get_shortest_attack_path(start=validated_start, target=validated_target)
         start_exists, target_exists = get_asset_existence(validated_start, validated_target)
 
-        if not path:
-            response = build_attack_path_response(
-                [],
-                [],
-                start=validated_start,
-                target=validated_target,
-                start_exists=start_exists,
-                target_exists=target_exists,
-            )
-            return _mark_no_path(response)
-
-        return build_attack_path_response(
-            path.get("nodes", []),
-            path.get("relationships", []),
+        return generate_attack_path(
             start=validated_start,
             target=validated_target,
             start_exists=start_exists,
@@ -126,7 +110,7 @@ def get_attack_path(start: str, target: str):
     summary="Get all attack paths",
     description="Returns all directed attack paths between two assets in the unified response structure.",
 )
-def get_all_paths(start: str, target: str):
+def all_paths(start: str, target: str):
     """Return all attack paths between start and target assets.
 
     Example request:
@@ -154,19 +138,14 @@ def get_all_paths(start: str, target: str):
         validated_start = _validated_asset_name(start, "asset")
         validated_target = _validated_asset_name(target, "asset")
 
-        paths = get_all_attack_paths(start=validated_start, target=validated_target)
         start_exists, target_exists = get_asset_existence(validated_start, validated_target)
 
-        response = build_all_paths_response(
-            paths,
+        return generate_full_graph(
             start=validated_start,
             target=validated_target,
             start_exists=start_exists,
             target_exists=target_exists,
         )
-        if not paths:
-            return _mark_no_path(response)
-        return response
     except HTTPException:
         logger.exception("Request failed: /all-paths")
         raise
