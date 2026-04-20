@@ -4,6 +4,8 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from app.ml_engine import predict_compromise
+from app.services.prediction_service import predict_next_targets
+from app.services.risk_service import get_top_asset_risk_scores
 from app.schemas.prediction import PredictionRequest, PredictionResponse
 
 router = APIRouter()
@@ -68,6 +70,19 @@ def predict_compromise_risk(payload: PredictionRequest) -> PredictionResponse:
                 status_code=500,
                 detail="Prediction failed due to an internal model processing error.",
             )
+
+        next_targets = predict_next_targets(risk_assets=get_top_asset_risk_scores())
+        if not next_targets:
+            next_targets = [
+                {
+                    "node": "Unknown",
+                    "probability": 0.5,
+                    "label": "LOW",
+                    "reasons": ["No graph connections found"],
+                }
+            ]
+
+        result["next_targets"] = next_targets
         return PredictionResponse(**result)
     except HTTPException:
         logger.exception("Request failed: /predict-compromise")

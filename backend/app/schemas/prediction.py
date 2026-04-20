@@ -87,6 +87,20 @@ class PredictionRequest(BaseModel):
 
 
 class PredictionResponse(BaseModel):
+    next_targets: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Graph-derived next compromise targets ranked by likelihood.",
+        json_schema_extra={
+            "example": [
+                {
+                    "node": "Application Server VM",
+                    "probability": 0.82,
+                    "label": "HIGH",
+                    "reasons": ["Connected to high-risk asset"],
+                }
+            ]
+        },
+    )
     predicted_label: str = Field(
         ...,
         description="Predicted compromise risk class label.",
@@ -115,6 +129,14 @@ class PredictionResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
+                "next_targets": [
+                    {
+                        "node": "Application Server VM",
+                        "probability": 0.82,
+                        "label": "HIGH",
+                        "reasons": ["Connected to high-risk asset"],
+                    }
+                ],
                 "predicted_label": "HIGH",
                 "confidence": 0.87,
                 "probabilities": {"HIGH": 0.87, "MEDIUM": 0.1, "LOW": 0.03},

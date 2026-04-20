@@ -31,9 +31,10 @@
             <p>Risk score will appear here</p>
           </section>
 
-          <section class="dashboard-card" aria-label="Prediction panel">
+          <section class="dashboard-card" id="prediction-panel" aria-label="Prediction panel">
             <h2>Prediction Panel</h2>
-            <p>Predicted targets will appear here</p>
+            <p class="prediction-summary">Predicted targets will appear here</p>
+            <div id="prediction-list"></div>
           </section>
         </div>
 
@@ -47,6 +48,11 @@
             <button type="button" id="zoom-out">−</button>
             <button type="button" id="fit-graph">Fit</button>
             <button type="button" id="reset-graph">Reset</button>
+          </div>
+
+          <div id="legend" class="graph-legend" aria-label="Graph legend">
+            <div><span class="risk"></span> High Risk</div>
+            <div><span class="predicted"></span> Predicted Target</div>
           </div>
 
           <!-- Graph Container -->

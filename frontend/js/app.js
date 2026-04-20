@@ -1,7 +1,10 @@
 const API_BASE_URL = "http://localhost:8000";
 let cachedRiskAssets = null;
 let riskMode = false;
+let predictionMode = false;
+let currentPredictions = [];
 let currentGraphData = null;
+let highRiskNodeIds = [];
 
 console.log("App loaded");
 
@@ -98,6 +101,7 @@ function normalizeRiskAssets(topAssets) {
 
   return topAssets
     .map((asset) => {
+      const id = String(asset?.id || asset?.asset_id || "").trim();
       const name = asset?.asset_name || asset?.asset || asset?.name || "Unknown";
       const riskRaw = asset?.risk_score ?? asset?.risk;
       const risk_score = Number(riskRaw);
@@ -106,6 +110,7 @@ function normalizeRiskAssets(topAssets) {
       const reason = asset?.reason || asset?.description || asset?.details || asset?.summary || getRiskReason(name);
 
       return {
+        id,
         name,
         risk_score: normalizedRiskScore,
         risk_level,
@@ -123,6 +128,15 @@ function resetHighlight() {
 
   window.cloudguardCy.nodes().removeClass("high-risk medium-risk low-risk");
   window.cloudguardCy.edges().removeClass("highlighted-edge");
+}
+
+function resetPredictionHighlight() {
+  if (!window.cloudguardCy) {
+    return;
+  }
+
+  window.cloudguardCy.nodes().removeClass("predicted risk-predicted");
+  window.cloudguardCy.edges().removeClass("highlighted");
 }
 
 async function loadRiskData() {
@@ -253,6 +267,217 @@ function highlightRiskNodes() {
   highlightRiskyNodes(window.latestRiskAssets || []);
 }
 
+function updateHighRiskNodeIds(riskAssets) {
+  const cy = window.cloudguardCy;
+  const assets = Array.isArray(riskAssets) ? riskAssets : [];
+  const idSet = new Set();
+  const highRiskNames = new Set();
+
+  assets.forEach((asset) => {
+    const level = String(asset?.risk_level || "").toUpperCase();
+    if (level !== "HIGH") {
+      return;
+    }
+
+    const id = String(asset?.id || "").trim();
+    if (id) {
+      idSet.add(id);
+    }
+
+    const name = normalize(asset?.name || asset?.asset_name || asset?.asset || "");
+    if (name) {
+      highRiskNames.add(name);
+    }
+  });
+
+  if (cy && highRiskNames.size > 0) {
+    cy.nodes().forEach((node) => {
+      const label = normalize(node.data("label") || node.data("id") || node.id());
+      if (highRiskNames.has(label)) {
+        idSet.add(String(node.id()));
+      }
+    });
+  }
+
+  highRiskNodeIds = Array.from(idSet);
+}
+
+function getRiskHighlightedNodeIds() {
+  const cy = window.cloudguardCy;
+  if (!cy) {
+    return [];
+  }
+
+  return highRiskNodeIds.filter((nodeId) => {
+    const node = cy.getElementById(String(nodeId || ""));
+    return !!node && !node.empty();
+  });
+}
+
+function findPredictionByNode(nodeId) {
+  return currentPredictions.find((prediction) => String(prediction?.node || prediction?.id || "") === String(nodeId || ""));
+}
+
+function normalizePredictionLabel(prediction) {
+  const label = String(prediction?.label || prediction?.risk_label || prediction?.level || "").trim().toUpperCase();
+
+  if (label === "HIGH" || label === "MEDIUM" || label === "LOW") {
+    return label;
+  }
+
+  const probability = Number(prediction?.probability || 0) * 100;
+  if (probability > 70) {
+    return "HIGH";
+  }
+
+  if (probability >= 40) {
+    return "MEDIUM";
+  }
+
+  return "LOW";
+}
+
+function normalizePredictionTargets(targets) {
+  if (Array.isArray(targets)) {
+    return targets;
+  }
+
+  if (targets && typeof targets === "object") {
+    return [targets];
+  }
+
+  return [];
+}
+
+function generateReasons(nodeId) {
+  const reasons = [];
+  const cy = window.cloudguardCy;
+  if (!cy || !nodeId) {
+    return ["Unknown risk factors"];
+  }
+
+  const node = cy.getElementById(String(nodeId));
+  if (!node || node.empty()) {
+    return ["Unknown risk factors"];
+  }
+
+  const data = node.data() || {};
+
+  if (data.internet_exposed) reasons.push("Internet exposed");
+  if (data.weak_iam) reasons.push("Weak IAM configuration");
+  if (Number(data.vulnerability_count) > 5) reasons.push("Multiple vulnerabilities");
+  if (Number(data.misconfiguration_count) > 0) reasons.push("Misconfigurations present");
+
+  return reasons.length ? reasons : ["High attack path probability"];
+}
+
+function showNodeDetails(nodeData) {
+  const assetDetailsPanel = document.querySelector('[aria-label="Asset details panel"]');
+  if (!assetDetailsPanel) {
+    return;
+  }
+
+  const assetId = nodeData?.id || "Unknown";
+  const assetLabel = nodeData?.label || nodeData?.name || assetId || "Unknown";
+  const assetType = nodeData?.type || "Unknown";
+  const prediction = predictionMode ? (findPredictionByNode(assetId) || findPredictionByNode(assetLabel)) : null;
+
+  const confidence = Number(prediction?.probability);
+  const predictionMarkup = prediction
+    ? `
+      <p><strong>Prediction:</strong> ${prediction.label || "Unknown"}</p>
+      <p><strong>Confidence:</strong> ${Number.isFinite(confidence) ? `${(confidence * 100).toFixed(1)}%` : "N/A"}</p>
+    `
+    : "";
+
+  assetDetailsPanel.innerHTML = `
+    <h3>Asset Details</h3>
+    <p><strong>ID:</strong> ${assetId}</p>
+    <p><strong>Label:</strong> ${assetLabel}</p>
+    <p><strong>Type:</strong> ${assetType}</p>
+    ${predictionMarkup}
+  `;
+}
+
+function getPredictionReasons(prediction) {
+  if (Array.isArray(prediction?.reasons)) {
+    return prediction.reasons.filter(Boolean).map(String);
+  }
+
+  if (typeof prediction?.reason === "string" && prediction.reason.trim()) {
+    return [prediction.reason.trim()];
+  }
+
+  if (typeof prediction?.reason === "object" && prediction.reason) {
+    return Object.values(prediction.reason)
+      .flat()
+      .filter(Boolean)
+      .map(String);
+  }
+
+  return [];
+}
+
+function getPredictionBadgeClass(label) {
+  const normalized = String(label || "").toLowerCase();
+
+  if (normalized.includes("high")) {
+    return "badge-high";
+  }
+
+  if (normalized.includes("medium")) {
+    return "badge-medium";
+  }
+
+  if (normalized.includes("low")) {
+    return "badge-low";
+  }
+
+  return "badge-medium";
+}
+
+function getRiskLabel(probability) {
+  const value = Number(probability || 0);
+
+  if (value >= 0.80) {
+    return "HIGH";
+  }
+
+  if (value >= 0.65) {
+    return "MEDIUM";
+  }
+
+  return "LOW";
+}
+function deduplicatePredictions(predictions) {
+  const map = new Map();
+
+  (Array.isArray(predictions) ? predictions : []).forEach((prediction) => {
+    const nodeId = String(prediction?.node || prediction?.id || "").trim();
+    if (!nodeId) {
+      return;
+    }
+
+    if (!map.has(nodeId) || Number(map.get(nodeId)?.probability || 0) < Number(prediction?.probability || 0)) {
+      map.set(nodeId, {
+        ...prediction,
+        node: nodeId
+      });
+    }
+  });
+
+  return Array.from(map.values());
+}
+
+function showNoPredictionsMessage() {
+  const container = document.getElementById("prediction-list");
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = `<div class="prediction-empty">No predictions available</div>`;
+}
+
 function focusRiskNode(assetName) {
   const cy = window.cloudguardCy;
   if (!cy || !assetName) {
@@ -283,14 +508,162 @@ function focusRiskNode(assetName) {
     }
   );
 
-  const assetDetailsPanel = document.querySelector('[aria-label="Asset details panel"]');
-  if (assetDetailsPanel) {
-    assetDetailsPanel.innerHTML = `
-      <h3>Asset Details</h3>
-      <p><strong>Label:</strong> ${assetName}</p>
-      <p><strong>Status:</strong> Highlighted from Risk Dashboard</p>
-    `;
+  showNodeDetails({
+    id: targetNode.data("id") || assetName,
+    label: targetNode.data("label") || assetName,
+    type: targetNode.data("type") || "Unknown"
+  });
+}
+
+function renderPredictions(predictions) {
+  const container = document.getElementById("prediction-list");
+  if (!container) {
+    return;
   }
+
+  container.innerHTML = "";
+
+  if (!Array.isArray(predictions) || predictions.length === 0) {
+    container.innerHTML = `<div class="prediction-empty">No predictions available</div>`;
+    return;
+  }
+
+  const sortedPredictions = [...predictions].sort((left, right) => {
+    const leftProbability = Number(left?.probability || 0);
+    const rightProbability = Number(right?.probability || 0);
+    return rightProbability - leftProbability;
+  });
+
+  sortedPredictions.forEach((prediction) => {
+    const probability = Number(prediction?.probability || 0);
+    const safeProbability = Number.isFinite(probability) ? Math.max(0, Math.min(1, probability)) : 0;
+    const nodeName = String(prediction?.node || prediction?.id || prediction?.target || "Unknown node");
+    const reasons = getPredictionReasons(prediction).length > 0 ? getPredictionReasons(prediction) : generateReasons(nodeName);
+    const label = normalizePredictionLabel(prediction);
+    const item = document.createElement("button");
+    item.type = "button";
+    item.classList.add("prediction-item");
+    item.innerHTML = `
+      <div class="prediction-item-row">
+        <span class="prediction-dot predicted"></span>
+        <strong>${nodeName}</strong>
+        <span class="badge ${getPredictionBadgeClass(label)}">${label}</span>
+      </div>
+      <div class="prediction-confidence">Confidence: ${(safeProbability * 100).toFixed(1)}%</div>
+      <div class="prediction-bar-track">
+        <div class="prediction-bar-fill" style="width: ${safeProbability * 100}%"></div>
+      </div>
+      <div class="prediction-reason">${reasons.map((reason) => `• ${reason}`).join("<br />")}</div>
+    `;
+
+    item.addEventListener("click", () => {
+      const targetNode = String(prediction?.node || prediction?.id || "");
+      focusNode(targetNode);
+      highlightConnectedEdges(targetNode);
+    });
+
+    container.appendChild(item);
+  });
+}
+
+function applyPredictionHighlight(predictions) {
+  const cy = window.cloudguardCy;
+  if (!cy) {
+    return;
+  }
+
+  const normalizedPredictions = Array.isArray(predictions) ? predictions : [];
+
+  cy.batch(() => {
+    cy.nodes().removeClass("predicted risk-predicted");
+
+    normalizedPredictions.forEach((prediction) => {
+      const nodeId = String(prediction?.node || prediction?.id || "").trim();
+      if (!nodeId) {
+        return;
+      }
+
+      const node = cy.getElementById(nodeId);
+      if (!node || node.empty()) {
+        return;
+      }
+
+      if (highRiskNodeIds.includes(nodeId)) {
+        node.addClass("risk-predicted");
+      } else {
+        node.addClass("predicted");
+      }
+    });
+  });
+}
+
+function applyCombinedHighlight(predictions, riskyNodes) {
+  const cy = window.cloudguardCy;
+  if (!cy || !Array.isArray(predictions) || !Array.isArray(riskyNodes)) {
+    return;
+  }
+
+  const riskySet = new Set(riskyNodes.map((nodeId) => String(nodeId || "").trim()).filter(Boolean));
+
+  cy.batch(() => {
+    predictions.forEach((prediction) => {
+      const nodeId = String(prediction?.node || prediction?.id || "").trim();
+      if (!nodeId || !riskySet.has(nodeId)) {
+        return;
+      }
+
+      const node = cy.getElementById(nodeId);
+      if (!node || node.empty()) {
+        return;
+      }
+
+      node.addClass("risk-predicted");
+    });
+  });
+}
+
+function highlightConnectedEdges(nodeId) {
+  const cy = window.cloudguardCy;
+  if (!cy || !nodeId) {
+    return;
+  }
+
+  const node = cy.getElementById(nodeId);
+  if (!node || node.empty()) {
+    return;
+  }
+
+  cy.batch(() => {
+    cy.edges().removeClass("highlighted");
+    node.connectedEdges().addClass("highlighted");
+  });
+}
+
+function focusNode(nodeId) {
+  const cy = window.cloudguardCy;
+  if (!cy || !nodeId) {
+    return;
+  }
+
+  const node = cy.getElementById(nodeId);
+  if (!node || node.empty()) {
+    return;
+  }
+
+  cy.animate(
+    {
+      fit: {
+        eles: node,
+        padding: 50
+      }
+    },
+    {
+      duration: 500
+    }
+  );
+
+  highlightConnectedEdges(nodeId);
+  showNodeDetails(node.data());
 }
 
 function renderGraph(graphData) {
@@ -361,9 +734,7 @@ function renderGraph(graphData) {
           "border-width": 6,
           "overlay-color": "#ff4d4f",
           "overlay-opacity": 0.12,
-          "shadow-blur": 20,
-          "shadow-color": "#ff4d4f",
-          "shadow-opacity": 0.6
+          "background-opacity": 0.95
         }
       },
       {
@@ -374,9 +745,7 @@ function renderGraph(graphData) {
           "border-width": 6,
           "overlay-color": "#ffcc00",
           "overlay-opacity": 0.1,
-          "shadow-blur": 18,
-          "shadow-color": "#ffcc00",
-          "shadow-opacity": 0.5
+          "background-opacity": 0.92
         }
       },
       {
@@ -386,9 +755,7 @@ function renderGraph(graphData) {
           "border-color": "#52c41a",
           "border-width": 3,
           "overlay-opacity": 0,
-          "shadow-opacity": 0.25,
-          "shadow-blur": 10,
-          "shadow-color": "#52c41a"
+          "background-opacity": 0.88
         }
       },
       {
@@ -490,6 +857,30 @@ function renderGraph(graphData) {
         }
       },
       {
+        selector: ".predicted",
+        style: {
+          "background-color": "#FFA500",
+          "border-width": 3,
+          "border-color": "#FF4500",
+          "overlay-color": "#FF8C00",
+          "overlay-opacity": 0.14,
+          "background-opacity": 0.92,
+          "transition-property": "background-color, border-color, border-width, overlay-opacity, background-opacity",
+          "transition-duration": "180ms"
+        }
+      },
+      {
+        selector: ".risk-predicted",
+        style: {
+          "background-color": "#FF00FF",
+          "border-width": 4,
+          "border-color": "#ff66ff",
+          "overlay-color": "#FF00FF",
+          "overlay-opacity": 0.18,
+          "background-opacity": 0.9
+        }
+      },
+      {
         selector: ".hover-highlighted-edge",
         style: {
           width: 4.5,
@@ -508,7 +899,9 @@ function renderGraph(graphData) {
     ],
 
     layout: {
-      name: "breadthfirst"
+      name: "breadthfirst",
+      directed: true,
+      spacingFactor: 1.5
     }
   });
 
@@ -523,6 +916,16 @@ function renderGraph(graphData) {
     resetHighlight();
     if (riskMode) {
       highlightRiskyNodes(window.latestRiskAssets || []);
+    }
+
+    updateHighRiskNodeIds(window.latestRiskAssets || []);
+
+    if (predictionMode && currentPredictions.length > 0) {
+      applyPredictionHighlight(currentPredictions);
+    }
+
+    if (riskMode && predictionMode && currentPredictions.length > 0) {
+      applyCombinedHighlight(currentPredictions, getRiskHighlightedNodeIds());
     }
   });
 
@@ -586,7 +989,6 @@ function renderGraph(graphData) {
   cy.on("tap", "node", function (evt) {
     const node = evt.target;
     const nodeData = node.data();
-    const assetDetailsPanel = document.querySelector('[aria-label="Asset details panel"]');
 
     applySelectionState(node);
 
@@ -600,20 +1002,7 @@ function renderGraph(graphData) {
       }
     );
 
-    if (!assetDetailsPanel) {
-      return;
-    }
-
-    const assetLabel = nodeData.label || nodeData.id || "Unknown";
-    const assetId = nodeData.id || "Unknown";
-    const assetType = nodeData.type || "Unknown";
-
-    assetDetailsPanel.innerHTML = `
-      <h3>Asset Details</h3>
-      <p><strong>ID:</strong> ${assetId}</p>
-      <p><strong>Label:</strong> ${assetLabel}</p>
-      <p><strong>Type:</strong> ${assetType}</p>
-    `;
+    showNodeDetails(nodeData);
   });
 
   // Subtle, non-blocking attack path pulse based on returned node order.
@@ -749,6 +1138,7 @@ async function fetchRiskScore() {
 
     window.latestRiskAssets = normalizedAssets;
     cachedRiskAssets = normalizedAssets;
+    updateHighRiskNodeIds(normalizedAssets);
     window.latestRiskSummary = {
       assetRiskByName: normalizedAssets.reduce((accumulator, asset) => {
         accumulator[asset.name] = {
@@ -817,67 +1207,68 @@ async function fetchRiskScore() {
   }
 }
 
-async function fetchPrediction() {
+async function fetchPrediction(inputData) {
+  const response = await fetch(`${API_BASE_URL}/predict-compromise`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(inputData)
+  });
+
+  return await response.json();
+}
+
+async function handlePrediction(inputData = {}) {
   updateStatus("Loading predictions...", "loading");
 
   try {
-    const response = await fetch(`${API_BASE_URL}/predict-compromise`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        asset_type: "VM",
-        internet_exposed: 1,
-        public_access: 1,
-        has_critical_data: 1,
-        weak_iam: 1,
-        lateral_movement_possible: 1,
-        privilege_escalation_possible: 1,
-        open_port_count: 5,
-        vulnerability_count: 10,
-        critical_vulnerability_count: 3,
-        misconfiguration_count: 2,
-        attack_path_count: 1,
-        shortest_path_length: 3,
-        exposure_score: 80,
-        identity_risk_score: 70,
-        network_risk_score: 75
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const cy = window.cloudguardCy;
+    if (!cy || highRiskNodeIds.length === 0) {
+      console.warn("Prediction skipped: missing graph or risk data");
+      updateStatus("Prediction skipped: load graph and risk data first", "error");
+      return;
     }
 
-    const data = await response.json();
+    predictionMode = true;
+    const payload = {
+      asset_type: "Database Server",
+      internet_exposed: 1,
+      public_access: 1,
+      has_critical_data: 1,
+      weak_iam: 1,
+      lateral_movement_possible: 1,
+      privilege_escalation_possible: 1,
+      open_port_count: 14,
+      vulnerability_count: 22,
+      critical_vulnerability_count: 6,
+      misconfiguration_count: 9,
+      attack_path_count: 4,
+      shortest_path_length: 2,
+      exposure_score: 0.82,
+      identity_risk_score: 0.73,
+      network_risk_score: 0.69
+    };
+
+    console.log("Prediction request payload:", payload);
+
+    const data = await fetchPrediction(payload);
     console.log("Prediction response:", data);
 
-    const panel = document.querySelector('[aria-label="Prediction panel"]');
-    if (!panel) {
+    const predictions = data.next_targets || [];
+
+    if (predictions.length === 0) {
+      showNoPredictionsMessage();
       return;
     }
 
-    if (!data.predicted_label) {
-      panel.innerHTML = `
-        <h3>Predicted Risk Level</h3>
-        <p>No prediction available</p>
-      `;
-      return;
+    currentPredictions = predictions;
+    renderPredictions(predictions);
+    applyPredictionHighlight(predictions);
+
+    if (riskMode) {
+      applyCombinedHighlight(predictions, getRiskHighlightedNodeIds());
     }
-
-    const label = data.predicted_label;
-    let color = "#4caf50";
-
-    if (label === "HIGH") color = "#ff4d4f";
-    if (label === "MEDIUM") color = "#faad14";
-
-    panel.innerHTML = `
-      <h3>Predicted Risk Level</h3>
-      <p style="color:${color}; font-weight:bold;">
-        ${label}
-      </p>
-    `;
 
     updateStatus("Predictions loaded", "success");
   } catch (error) {
@@ -933,5 +1324,5 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btnAttackPath")?.addEventListener("click", fetchAttackPath);
   document.getElementById("btnAllPaths")?.addEventListener("click", fetchAllPaths);
   document.getElementById("btnRiskScore")?.addEventListener("click", fetchRiskScore);
-  document.getElementById("btnPredictCompromise")?.addEventListener("click", fetchPrediction);
+  document.getElementById("btnPredictCompromise")?.addEventListener("click", () => handlePrediction());
 });
