@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.ml_engine import predict_compromise
+from app.mitigation_engine import generate_mitigations
 from app.neo4j_config import driver
 from app.services.risk_service import get_single_asset_risk_data
 
@@ -435,6 +436,54 @@ def compute_combined_score(risk_score: float, ml_confidence: float, reachability
     return round(_clamp(combined_score, 0.0, 1.0), 4)
 
 
+def adjust_score_with_security_context(score: float, features: dict[str, Any], risk_level: str | None) -> float:
+    adjusted_score = _clamp(_to_float(score), 0.0, 1.0)
+    normalized_risk_level = str(risk_level or "").strip().upper()
+
+    if normalized_risk_level in {"HIGH", "CRITICAL"}:
+        adjusted_score += 0.15
+    elif normalized_risk_level == "MEDIUM":
+        adjusted_score += 0.05
+    else:
+        adjusted_score -= 0.05
+
+    if _to_int((features or {}).get("has_critical_data"), default=0) == 1:
+        adjusted_score += 0.10
+
+    if _to_int((features or {}).get("privilege_escalation_possible"), default=0) == 1:
+        adjusted_score += 0.10
+
+    if _to_int((features or {}).get("internet_exposed"), default=0) == 1:
+        adjusted_score += 0.05
+
+    shortest_path_length = max(_to_int((features or {}).get("shortest_path_length"), default=3), 1)
+    if shortest_path_length == 1:
+        adjusted_score += 0.10
+    elif shortest_path_length == 2:
+        adjusted_score += 0.05
+
+    if normalized_risk_level == "LOW":
+        adjusted_score -= 0.10
+
+    return round(_clamp(adjusted_score, 0.0, 1.0), 4)
+
+
+def build_prediction_reason(features: dict[str, Any]) -> str:
+    if _to_int((features or {}).get("has_critical_data"), default=0) == 1:
+        return "High impact target with critical data exposure risk"
+
+    if _to_int((features or {}).get("privilege_escalation_possible"), default=0) == 1:
+        return "High privilege escalation potential"
+
+    if _to_int((features or {}).get("internet_exposed"), default=0) == 1:
+        return "Exposed through internet-facing attack surface"
+
+    if max(_to_int((features or {}).get("shortest_path_length"), default=3), 1) == 1:
+        return "Directly reachable in attack path"
+
+    return "Predicted based on overall system risk"
+
+
 def select_best_next_target(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not candidates:
         return None
@@ -483,6 +532,7 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
 
     enriched_candidates: list[dict[str, Any]] = []
     best_feature_importance: list[dict[str, Any]] = []
+    candidate_feature_map: dict[str, dict[str, Any]] = {}
 
     for candidate in candidates:
         path_length = max(_to_int(candidate.get("path_length"), default=1), 1)
@@ -494,6 +544,7 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
                 candidate,
                 source_context=source_context,
             )
+            candidate_feature_map[str(candidate.get("asset_name") or "")] = features
             prediction = predict_compromise(features)
             prediction_summary = _safe_prediction_summary(prediction)
             compromise_likelihood = compute_compromise_likelihood(prediction_summary.get("probabilities"))
@@ -502,7 +553,13 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
                 ml_confidence=compromise_likelihood,
                 reachability_score=reachability_score,
             )
+            combined_score = adjust_score_with_security_context(
+                combined_score,
+                features,
+                current_risk.get("risk_level"),
+            )
         except Exception:
+            candidate_feature_map[str(candidate.get("asset_name") or "")] = {}
             prediction_summary = {
                 "predicted_label": "UNKNOWN",
                 "confidence": 0.0,
@@ -512,6 +569,11 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
                 risk_score=_to_float(current_risk.get("risk_score"), 0.0),
                 ml_confidence=0.0,
                 reachability_score=reachability_score,
+            )
+            combined_score = adjust_score_with_security_context(
+                combined_score,
+                {},
+                current_risk.get("risk_level"),
             )
             prediction = {}
 
@@ -527,6 +589,11 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
 
         candidate["_feature_importance"] = prediction.get("feature_importance", []) if isinstance(prediction, dict) else []
 
+    enriched_candidates = sorted(
+        enriched_candidates,
+        key=lambda candidate: (-_to_float(candidate.get("combined_score"), 0.0), str(candidate.get("asset_name") or "")),
+    )[:3]
+
     best_candidate = select_best_next_target(enriched_candidates)
     predicted_next_target: dict[str, Any] | None = None
 
@@ -537,10 +604,23 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
             "predicted_label": best_candidate.get("prediction", {}).get("predicted_label", "UNKNOWN"),
             "confidence": _to_float(best_candidate.get("prediction", {}).get("confidence"), 0.0),
             "combined_score": _to_float(best_candidate.get("combined_score"), 0.0),
-            "reason": (
-                "Selected for shortest-path reachability and strongest combined compromise likelihood."
-            ),
+            "reason": build_prediction_reason(candidate_feature_map.get(str(best_candidate.get("asset_name") or ""), {})),
         }
+
+        best_features = candidate_feature_map.get(str(best_candidate.get("asset_name") or ""), {})
+        impact_hint: str | None = None
+        if best_features:
+            if _to_int(best_features.get("has_critical_data"), default=0) == 1:
+                impact_hint = "Critical data risk"
+            elif _to_int(best_features.get("privilege_escalation_possible"), default=0) == 1:
+                impact_hint = "Privilege escalation path"
+            elif _to_int(best_features.get("internet_exposed"), default=0) == 1:
+                impact_hint = "High impact target"
+            elif max(_to_int(best_features.get("shortest_path_length"), default=3), 1) == 1:
+                impact_hint = "Attack path bridge"
+
+        if impact_hint:
+            predicted_next_target["impact_hint"] = impact_hint
 
         for candidate in candidates:
             if candidate.get("asset_name") == best_candidate.get("asset_name"):
@@ -549,10 +629,20 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
                     best_feature_importance = raw_importance
                 break
 
+    mitigation_context: dict[str, Any] = {
+        "risk_level": current_risk.get("risk_level"),
+    }
+    if best_candidate:
+        best_candidate_name = str(best_candidate.get("asset_name") or "")
+        mitigation_context.update(candidate_feature_map.get(best_candidate_name, {}))
+
+    mitigations = generate_mitigations(mitigation_context)
+
     return {
         "asset_name": normalized_asset_name,
         "current_risk": current_risk,
         "candidate_next_hops": enriched_candidates,
         "predicted_next_target": predicted_next_target,
         "feature_importance": best_feature_importance,
+        "mitigations": mitigations,
     }

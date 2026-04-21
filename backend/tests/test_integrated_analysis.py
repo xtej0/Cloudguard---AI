@@ -56,6 +56,7 @@ def _sample_response() -> dict:
                 "direction": "increase",
             }
         ],
+        "mitigations": [],
     }
 
 
@@ -71,6 +72,8 @@ def test_integrated_analysis_success_response(monkeypatch):
     assert "candidate_next_hops" in payload
     assert "predicted_next_target" in payload
     assert "feature_importance" in payload
+    assert "mitigations" in payload
+    assert isinstance(payload["mitigations"], list)
 
 
 def test_candidate_annotation_structure(monkeypatch):
@@ -157,6 +160,7 @@ def test_frontend_friendly_response_shape(monkeypatch):
     assert isinstance(payload.get("candidate_next_hops"), list)
     assert payload.get("predicted_next_target") is None or isinstance(payload.get("predicted_next_target"), dict)
     assert isinstance(payload.get("feature_importance"), list)
+    assert isinstance(payload.get("mitigations"), list)
 
 
 def test_direct_reachable_internal_candidate_has_nonzero_compromise_posture():
@@ -409,3 +413,156 @@ def test_application_server_still_prefers_database_server(monkeypatch):
     result = integrated_analysis.get_integrated_asset_analysis("Application Server VM")
 
     assert result["predicted_next_target"]["asset_name"] == "Database Server"
+
+
+def test_integrated_analysis_includes_mitigations_for_best_candidate(monkeypatch):
+    candidates = [
+        {
+            "asset_name": "Application Server VM",
+            "asset_type": "VM",
+            "labels": ["Asset", "VM"],
+            "path_length": 1,
+            "attack_path_count": 1,
+            "props": {
+                "internet_exposed": 1,
+                "public_access": 1,
+                "has_critical_data": 1,
+            },
+        }
+    ]
+
+    prediction = {
+        "predicted_label": "HIGH",
+        "confidence": 0.82,
+        "probabilities": {"HIGH": 0.6, "MEDIUM": 0.3, "LOW": 0.1},
+    }
+
+    monkeypatch.setattr(integrated_analysis, "asset_exists", lambda _asset_name: True)
+    monkeypatch.setattr(
+        integrated_analysis,
+        "get_asset_risk_summary",
+        lambda _asset_name: {"risk_score": 80.0, "risk_level": "CRITICAL", "explanation": "stub"},
+    )
+    monkeypatch.setattr(
+        integrated_analysis,
+        "_build_source_progression_context",
+        lambda _asset_name: {"source_attack_path_count": 2, "source_shortest_attack_path_length": 1},
+    )
+    monkeypatch.setattr(integrated_analysis, "get_candidate_next_hops", lambda _asset_name: candidates)
+    monkeypatch.setattr(integrated_analysis, "predict_compromise", lambda _features: prediction)
+
+    result = integrated_analysis.get_integrated_asset_analysis("Web Server VM")
+
+    assert "mitigations" in result
+    assert isinstance(result["mitigations"], list)
+    assert result["mitigations"]
+    titles = {item["title"] for item in result["mitigations"]}
+    assert "Restrict Internet Exposure" in titles
+
+
+def test_integrated_analysis_limits_candidates_to_top_three(monkeypatch):
+    candidates = [
+        {
+            "asset_name": "Candidate 1",
+            "asset_type": "VM",
+            "labels": ["Asset", "VM"],
+            "path_length": 1,
+            "attack_path_count": 1,
+            "props": {"internet_exposed": 1, "public_access": 1},
+        },
+        {
+            "asset_name": "Candidate 2",
+            "asset_type": "VM",
+            "labels": ["Asset", "VM"],
+            "path_length": 2,
+            "attack_path_count": 1,
+            "props": {"internet_exposed": 1},
+        },
+        {
+            "asset_name": "Candidate 3",
+            "asset_type": "VM",
+            "labels": ["Asset", "VM"],
+            "path_length": 3,
+            "attack_path_count": 1,
+            "props": {},
+        },
+        {
+            "asset_name": "Candidate 4",
+            "asset_type": "VM",
+            "labels": ["Asset", "VM"],
+            "path_length": 4,
+            "attack_path_count": 1,
+            "props": {},
+        },
+    ]
+
+    prediction = {
+        "predicted_label": "HIGH",
+        "confidence": 0.75,
+        "probabilities": {"HIGH": 0.7, "MEDIUM": 0.2, "LOW": 0.1},
+    }
+
+    monkeypatch.setattr(integrated_analysis, "asset_exists", lambda _asset_name: True)
+    monkeypatch.setattr(
+        integrated_analysis,
+        "get_asset_risk_summary",
+        lambda _asset_name: {"risk_score": 70.0, "risk_level": "HIGH", "explanation": "stub"},
+    )
+    monkeypatch.setattr(
+        integrated_analysis,
+        "_build_source_progression_context",
+        lambda _asset_name: {"source_attack_path_count": 2, "source_shortest_attack_path_length": 2},
+    )
+    monkeypatch.setattr(integrated_analysis, "get_candidate_next_hops", lambda _asset_name: candidates)
+    monkeypatch.setattr(integrated_analysis, "predict_compromise", lambda _features: prediction)
+
+    result = integrated_analysis.get_integrated_asset_analysis("Web Server VM")
+
+    assert len(result["candidate_next_hops"]) == 3
+    assert [item["asset_name"] for item in result["candidate_next_hops"]] == ["Candidate 1", "Candidate 2", "Candidate 3"]
+
+
+def test_integrated_analysis_is_deterministic_for_same_input(monkeypatch):
+    candidates = [
+        {
+            "asset_name": "Candidate A",
+            "asset_type": "VM",
+            "labels": ["Asset", "VM"],
+            "path_length": 1,
+            "attack_path_count": 1,
+            "props": {"internet_exposed": 1, "has_critical_data": 1},
+        },
+        {
+            "asset_name": "Candidate B",
+            "asset_type": "Database",
+            "labels": ["Asset", "Database"],
+            "path_length": 2,
+            "attack_path_count": 1,
+            "props": {"public_access": 1},
+        },
+    ]
+
+    prediction = {
+        "predicted_label": "MEDIUM",
+        "confidence": 0.64,
+        "probabilities": {"HIGH": 0.3, "MEDIUM": 0.5, "LOW": 0.2},
+    }
+
+    monkeypatch.setattr(integrated_analysis, "asset_exists", lambda _asset_name: True)
+    monkeypatch.setattr(
+        integrated_analysis,
+        "get_asset_risk_summary",
+        lambda _asset_name: {"risk_score": 66.0, "risk_level": "HIGH", "explanation": "stub"},
+    )
+    monkeypatch.setattr(
+        integrated_analysis,
+        "_build_source_progression_context",
+        lambda _asset_name: {"source_attack_path_count": 1, "source_shortest_attack_path_length": 2},
+    )
+    monkeypatch.setattr(integrated_analysis, "get_candidate_next_hops", lambda _asset_name: candidates)
+    monkeypatch.setattr(integrated_analysis, "predict_compromise", lambda _features: prediction)
+
+    first = integrated_analysis.get_integrated_asset_analysis("Application Server VM")
+    second = integrated_analysis.get_integrated_asset_analysis("Application Server VM")
+
+    assert first == second
