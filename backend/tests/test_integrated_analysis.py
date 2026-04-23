@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 import app.integrated_analysis as integrated_analysis
@@ -101,6 +103,175 @@ def test_combined_score_range():
     assert 0.0 <= compute_combined_score(risk_score=72.4, ml_confidence=0.78, reachability_score=1.0) <= 1.0
     assert 0.0 <= compute_combined_score(risk_score=0.0, ml_confidence=0.0, reachability_score=0.25) <= 1.0
     assert 0.0 <= compute_combined_score(risk_score=100.0, ml_confidence=1.0, reachability_score=1.0) <= 1.0
+
+
+def test_attack_category_uses_graph_labels_for_identity_and_user():
+    assert integrated_analysis._attack_category("IAM Role", "", ["IAMRole"]) == "IAM_ROLE"
+    assert integrated_analysis._attack_category("User", "", ["User"]) == "USER"
+
+
+def test_attack_category_uses_name_fallbacks_for_identity_and_user():
+    assert integrated_analysis._attack_category("iam role", "", []) == "IAM_ROLE"
+    assert integrated_analysis._attack_category("user", "", []) == "USER"
+
+
+def test_get_candidate_next_hops_uses_neighbors_in_order(monkeypatch):
+    graph_context = {
+        "total_nodes": 3,
+        "total_edges": 2,
+        "outgoing_edges": [
+            {"source": "Web Server VM", "target": "User"},
+            {"source": "Web Server VM", "target": "Database Server"},
+        ],
+        "incoming_edges": [],
+        "neighbors": ["User", "Database Server"],
+    }
+
+    records = [
+        {
+            "source_name": "Web Server VM",
+            "source_labels": ["Asset", "VM"],
+            "source_props": {"asset_type": "VM"},
+            "asset_name": "Database Server",
+            "labels": ["Asset", "Database"],
+            "props": {"asset_type": "Database"},
+            "path_length": 1,
+            "attack_path_count": 1,
+        },
+        {
+            "source_name": "Web Server VM",
+            "source_labels": ["Asset", "VM"],
+            "source_props": {"asset_type": "VM"},
+            "asset_name": "User",
+            "labels": ["User"],
+            "props": {"asset_type": ""},
+            "path_length": 1,
+            "attack_path_count": 1,
+        },
+    ]
+
+    class _FakeSession:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def run(self, *args, **kwargs):
+            return self._rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeDriver:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def session(self):
+            return _FakeSession(self._rows)
+
+    monkeypatch.setattr(integrated_analysis, "_get_asset_graph_context", lambda _asset_name: graph_context)
+    monkeypatch.setattr(integrated_analysis, "driver", _FakeDriver(records))
+    monkeypatch.setattr(integrated_analysis, "_attack_category", lambda _asset_name, _asset_type, _labels: "APPLICATION_SERVER")
+    monkeypatch.setattr(integrated_analysis, "_is_valid_attack_transition", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        integrated_analysis,
+        "ATTACK_PRIORITY",
+        {
+            "UNKNOWN": 1,
+            "INTERNET": 1,
+            "WEB_SERVER": 1,
+            "APPLICATION_SERVER": 1,
+            "IAM_ROLE": 1,
+            "DATABASE": 1,
+            "STORAGE_BUCKET": 1,
+        },
+    )
+
+    result = integrated_analysis.get_candidate_next_hops("Web Server VM")
+
+    assert [item["asset_name"] for item in result] == ["User", "Database Server"]
+    user_candidate = next(item for item in result if item["asset_name"] == "User")
+    assert user_candidate["asset_type"] == "User"
+
+
+@pytest.mark.parametrize(
+    "source_asset, source_name, source_label, candidate_name, candidate_label",
+    [
+        ("IAM Role", "IAM Role", "IAMRole", "User", "User"),
+        ("User", "User", "User", "IAM Role", "IAMRole"),
+    ],
+)
+def test_identity_transitions_bypass_priority_and_transition_rejection(
+    monkeypatch,
+    source_asset,
+    source_name,
+    source_label,
+    candidate_name,
+    candidate_label,
+):
+    graph_context = {
+        "total_nodes": 2,
+        "total_edges": 1,
+        "outgoing_edges": [{"source": source_asset, "target": candidate_name}],
+        "incoming_edges": [],
+        "neighbors": [candidate_name],
+    }
+
+    records = [
+        {
+            "source_name": source_name,
+            "source_labels": [source_label],
+            "source_props": {"asset_type": source_asset},
+            "asset_name": candidate_name,
+            "labels": [candidate_label],
+            "props": {"asset_type": candidate_name},
+            "path_length": 1,
+            "attack_path_count": 1,
+        }
+    ]
+
+    class _FakeSession:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def run(self, *args, **kwargs):
+            return self._rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeDriver:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def session(self):
+            return _FakeSession(self._rows)
+
+    monkeypatch.setattr(integrated_analysis, "_get_asset_graph_context", lambda _asset_name: graph_context)
+    monkeypatch.setattr(integrated_analysis, "driver", _FakeDriver(records))
+    monkeypatch.setattr(integrated_analysis, "_is_valid_attack_transition", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        integrated_analysis,
+        "ATTACK_PRIORITY",
+        {
+            "UNKNOWN": 1,
+            "INTERNET": 1,
+            "WEB_SERVER": 1,
+            "APPLICATION_SERVER": 1,
+            "IAM_ROLE": 4,
+            "USER": 2,
+            "DATABASE": 1,
+            "STORAGE_BUCKET": 1,
+        },
+    )
+
+    result = integrated_analysis.get_candidate_next_hops(source_asset)
+
+    assert [item["asset_name"] for item in result] == [candidate_name]
 
 
 def test_no_candidate_scenario(monkeypatch):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from app.ml_engine import predict_compromise
@@ -10,6 +11,7 @@ from app.services.risk_service import get_single_asset_risk_data
 
 MAX_CANDIDATE_PATH_DEPTH = 3
 MAX_CANDIDATES = 25
+DEBUG = os.getenv("CLOUDGUARD_DEBUG", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 ASSET_PROFILE_DEFAULTS: dict[str, dict[str, float]] = {
@@ -156,6 +158,143 @@ def _scaled_floor(base_value: float, intensity: float) -> float:
     return round(base_value * intensity, 2)
 
 
+def _debug_print(*parts: Any) -> None:
+    if DEBUG:
+        print(*parts)
+
+
+def _get_asset_graph_context(asset_name: str) -> dict[str, Any]:
+    snapshot_query = """
+    MATCH (n)
+    RETURN n.name AS name, labels(n) AS labels
+    """
+
+    edge_snapshot_query = """
+    MATCH (s)-[r]->(t)
+    RETURN s.name AS source, t.name AS target, type(r) AS label, type(r) AS type
+    """
+
+    context_query = """
+    MATCH (n)
+    WITH count(n) AS total_nodes
+    MATCH ()-[r]->()
+    WITH total_nodes, count(r) AS total_edges
+    OPTIONAL MATCH (source {name: $asset_name})-[out_r]->(target)
+    WITH total_nodes, total_edges,
+           collect({
+               source: source.name,
+               target: target.name,
+               label: type(out_r),
+               type: type(out_r)
+           }) AS outgoing_edges
+    OPTIONAL MATCH (incoming_source)-[in_r]->(incoming_target {name: $asset_name})
+    RETURN total_nodes,
+             total_edges,
+             [edge IN outgoing_edges WHERE edge.source IS NOT NULL AND edge.target IS NOT NULL] AS outgoing_edges,
+             collect({
+                 source: incoming_source.name,
+                 target: incoming_target.name,
+                 label: type(in_r),
+                 type: type(in_r)
+             }) AS incoming_edges
+    """
+
+    with driver.session() as session:
+        raw_node_records = list(session.run(snapshot_query))
+        raw_edge_records = list(session.run(edge_snapshot_query))
+        record = session.run(context_query, asset_name=asset_name).single()
+
+    nodes = [
+        {
+            "name": str(node_record.get("name") or ""),
+            "labels": list(node_record.get("labels") or []),
+        }
+        for node_record in raw_node_records
+    ]
+    edges = [
+        {
+            "source": str(edge_record.get("source") or ""),
+            "target": str(edge_record.get("target") or ""),
+            "label": str(edge_record.get("label") or ""),
+            "type": str(edge_record.get("type") or ""),
+        }
+        for edge_record in raw_edge_records
+    ]
+
+    _debug_print("\n=== GRAPH FETCH DEBUG ===")
+    _debug_print("Asset requested:", asset_name)
+    _debug_print("Graph fetch function used:", "_get_asset_graph_context")
+    _debug_print("Cypher Query:", context_query.strip())
+    _debug_print("Nodes returned:", nodes)
+    _debug_print("Edges returned:", edges)
+    _debug_print("\n--- RAW GRAPH SIZE ---")
+    _debug_print("Total nodes (raw):", len(nodes))
+    _debug_print("Total edges (raw):", len(edges))
+    _debug_print("\n--- NODE NAMES ---")
+    if nodes:
+        for node in nodes:
+            _debug_print(node.get("name") or node)
+    else:
+        _debug_print("None")
+
+    if not record:
+        _debug_print("\n--- BEFORE FILTER ---")
+        _debug_print(len(nodes), len(edges))
+        _debug_print("\n--- AFTER FILTER ---")
+        _debug_print(0, 0)
+        return {
+            "total_nodes": 0,
+            "total_edges": 0,
+            "outgoing_edges": [],
+            "incoming_edges": [],
+            "neighbors": [],
+        }
+
+    outgoing_edges = list(record.get("outgoing_edges") or [])
+    incoming_edges = [
+        edge for edge in list(record.get("incoming_edges") or [])
+        if edge.get("source") is not None and edge.get("target") is not None
+    ]
+
+    _debug_print("\n--- BEFORE FILTER ---")
+    _debug_print(len(nodes), len(edges))
+    _debug_print("\n--- AFTER FILTER ---")
+    _debug_print(len(nodes), len(outgoing_edges) + len(incoming_edges))
+
+    neighbors = set()
+    for edge in outgoing_edges:
+        target_name = str(edge.get("target") or "").strip()
+        if target_name:
+            neighbors.add(target_name)
+    for edge in incoming_edges:
+        source_name = str(edge.get("source") or "").strip()
+        if source_name:
+            neighbors.add(source_name)
+
+    _debug_print("Filter FIX APPLIED - neighbors:", neighbors)
+
+    if len(neighbors) == 0:
+        _debug_print("\n--- BEFORE FILTER ---")
+        _debug_print(len(nodes), len(edges))
+        _debug_print("\n--- AFTER FILTER ---")
+        _debug_print(0, 0)
+        return {
+            "total_nodes": _to_int(record.get("total_nodes"), default=0),
+            "total_edges": _to_int(record.get("total_edges"), default=0),
+            "outgoing_edges": [],
+            "incoming_edges": [],
+            "neighbors": [],
+        }
+
+    return {
+        "total_nodes": _to_int(record.get("total_nodes"), default=0),
+        "total_edges": _to_int(record.get("total_edges"), default=0),
+        "outgoing_edges": outgoing_edges,
+        "incoming_edges": incoming_edges,
+        "neighbors": sorted(neighbors),
+    }
+
+
 def _build_source_progression_context(source_asset: str) -> dict[str, int]:
     risk_data = get_single_asset_risk_data(source_asset)
     attack_path_details = risk_data.get("attack_path_details") or {}
@@ -207,38 +346,222 @@ def get_asset_risk_summary(asset_name: str) -> dict[str, Any]:
     }
 
 
+ATTACK_PRIORITY: dict[str, int] = {
+    "INTERNET": 0,
+    "STORAGE_BUCKET": 1,
+    "WEB_SERVER": 2,
+    "APPLICATION_SERVER": 3,
+    "IAM_ROLE": 4,
+    "DATABASE": 5,
+    "USER": 2,
+    "UNKNOWN": 2,
+}
+
+
+def _attack_category(asset_name: str, asset_type: str, labels: list[Any]) -> str:
+    name_lower = str(asset_name or "").strip().lower()
+    type_lower = str(asset_type or "").strip().lower()
+    raw_labels = [str(label).strip() for label in labels if str(label).strip()]
+    labels_lower = {label.lower() for label in raw_labels}
+    compact_labels = {label.replace(" ", "").replace("_", "").replace("-", "") for label in labels_lower}
+
+    category = "UNKNOWN"
+
+    if "IAMRole" in raw_labels or "iamrole" in compact_labels or "iam role" in labels_lower or "iam_role" in labels_lower:
+        category = "IAM_ROLE"
+    elif "User" in raw_labels or "user" in labels_lower:
+        category = "USER"
+    elif "internet" in name_lower or "internet" in type_lower or "internet" in labels_lower:
+        category = "INTERNET"
+    elif "database" in type_lower or "database" in labels_lower or "db" in name_lower:
+        category = "DATABASE"
+    elif (
+        "bucket" in type_lower
+        or "storage" in type_lower
+        or "bucket" in labels_lower
+        or "storage" in labels_lower
+        or "s3" in name_lower
+    ):
+        category = "STORAGE_BUCKET"
+    elif "application" in name_lower or "application" in type_lower or "app" in name_lower:
+        category = "APPLICATION_SERVER"
+    elif "web" in name_lower or "web" in type_lower:
+        category = "WEB_SERVER"
+    elif "server" in type_lower or "vm" in type_lower or "compute" in type_lower:
+        category = "APPLICATION_SERVER"
+    elif name_lower == "iam role" or "iam role" in name_lower:
+        category = "IAM_ROLE"
+    elif name_lower == "user":
+        category = "USER"
+
+    _debug_print("CATEGORY DETECTED:", asset_name, "->", category)
+    return category
+
+
+def _is_valid_attack_transition(source_category: str, candidate_category: str) -> bool:
+    if source_category == "DATABASE":
+        return False
+
+    allowed_transitions = {
+        ("INTERNET", "WEB_SERVER"),
+        ("WEB_SERVER", "APPLICATION_SERVER"),
+        ("APPLICATION_SERVER", "DATABASE"),
+        ("IAM_ROLE", "DATABASE"),
+        ("STORAGE_BUCKET", "APPLICATION_SERVER"),
+    }
+
+    if (source_category, candidate_category) in allowed_transitions:
+        return True
+
+    source_priority = ATTACK_PRIORITY.get(source_category, ATTACK_PRIORITY["UNKNOWN"])
+    candidate_priority = ATTACK_PRIORITY.get(candidate_category, ATTACK_PRIORITY["UNKNOWN"])
+
+    if candidate_priority < source_priority:
+        return False
+
+    # Keep only meaningful forward paths: privilege increase, deeper movement, or sensitive targets.
+    if candidate_priority > source_priority:
+        return True
+
+    return candidate_category in {"IAM_ROLE", "DATABASE"}
+
+
 def get_candidate_next_hops(asset_name: str) -> list[dict[str, Any]]:
-    query = f"""
-        MATCH (source {{name: $asset_name}})
-    MATCH p = (source)-[*1..{MAX_CANDIDATE_PATH_DEPTH}]->(candidate)
-    WHERE candidate.name IS NOT NULL
-      AND candidate.name <> $asset_name
-    WITH candidate,
-         min(length(p)) AS shortest_path_length,
-         count(DISTINCT p) AS attack_path_count
-    RETURN
-      candidate.name AS asset_name,
-      labels(candidate) AS labels,
-      properties(candidate) AS props,
-      shortest_path_length AS path_length,
-      attack_path_count
-    ORDER BY path_length ASC, attack_path_count DESC, asset_name ASC
-    LIMIT $limit
+    graph_debug_context = _get_asset_graph_context(asset_name)
+    outgoing_edges = list(graph_debug_context.get("outgoing_edges") or [])
+    incoming_edges = list(graph_debug_context.get("incoming_edges") or [])
+    neighbors = list(graph_debug_context.get("neighbors") or [])
+    identity_categories = {"IAM_ROLE", "USER"}
+
+    _debug_print("\n=== CANDIDATE FUNCTION START ===")
+    _debug_print("Source asset:", asset_name)
+    _debug_print("Incoming neighbors:", neighbors)
+
+    query = """
+        MATCH (source {name: $asset_name})-[r]->(candidate)
+        WHERE candidate.name IS NOT NULL
+            AND candidate.name <> $asset_name
+        RETURN
+            source.name AS source_name,
+            labels(source) AS source_labels,
+            properties(source) AS source_props,
+            candidate.name AS asset_name,
+            labels(candidate) AS labels,
+            properties(candidate) AS props,
+            1 AS path_length,
+            count(r) AS attack_path_count
+        ORDER BY attack_path_count DESC, asset_name ASC
+        LIMIT $limit
     """
 
     candidates: list[dict[str, Any]] = []
     with driver.session() as session:
-        results = session.run(
+        results = list(session.run(
             query,
             asset_name=asset_name,
             limit=MAX_CANDIDATES,
-        )
+        ))
+        record_by_name = {
+            str(record.get("asset_name") or ""): record
+            for record in results
+            if str(record.get("asset_name") or "").strip()
+        }
+        source_category: str | None = None
+        source_priority = ATTACK_PRIORITY["UNKNOWN"]
+
+        if not results:
+            source_category = _attack_category(asset_name, "", [])
+            source_priority = ATTACK_PRIORITY.get(source_category, ATTACK_PRIORITY["UNKNOWN"])
+
         for record in results:
+            if source_category is None:
+                source_props = dict(record.get("source_props") or {})
+                source_labels = list(record.get("source_labels") or [])
+                source_name = str(record.get("source_name") or asset_name)
+                source_asset_type = str(source_props.get("asset_type") or "")
+                source_category = _attack_category(source_name, source_asset_type, source_labels)
+                source_priority = ATTACK_PRIORITY.get(source_category, ATTACK_PRIORITY["UNKNOWN"])
+
+                # Terminal high-value data assets should not emit downstream candidates.
+                if source_category == "DATABASE":
+                    _debug_print("REJECTED:", asset_name, "| Reason: source category is DATABASE (terminal)")
+                    _debug_print("\n=== CANDIDATE FUNCTION END ===")
+                    _debug_print("Final candidates list:", candidates)
+                    return []
+
+        _debug_print("Loop input neighbors:", neighbors)
+        _debug_print("Neighbor count:", len(neighbors))
+
+        for candidate_name in neighbors:
+            candidate_name = str(candidate_name or "")
+            record = record_by_name.get(candidate_name)
+            if record is None:
+                record = {
+                    "asset_name": candidate_name,
+                    "labels": [],
+                    "props": {},
+                    "path_length": 1,
+                    "attack_path_count": 1,
+                }
+
             props = dict(record.get("props") or {})
             labels = list(record.get("labels") or [])
+            candidate_asset_type = _asset_type_from_candidate({"asset_type": props.get("asset_type"), "labels": labels})
+            candidate_category = _attack_category(candidate_name, candidate_asset_type, labels)
+            candidate_priority = ATTACK_PRIORITY.get(candidate_category, ATTACK_PRIORITY["UNKNOWN"])
+
+            _debug_print("\n--- Evaluating Neighbor ---")
+            _debug_print("Neighbor:", candidate_name)
+
+            is_same_as_source = candidate_name == asset_name
+            has_outgoing_edge = any(
+                str(edge.get("source") or "") == asset_name and str(edge.get("target") or "") == candidate_name
+                for edge in outgoing_edges
+            )
+            has_incoming_edge = any(
+                str(edge.get("target") or "") == asset_name and str(edge.get("source") or "") == candidate_name
+                for edge in incoming_edges
+            )
+            transition_valid = False if source_category is None else _is_valid_attack_transition(source_category, candidate_category)
+
+            _debug_print("Check: is same as source?", is_same_as_source)
+            _debug_print("Check: has outgoing edge?", has_outgoing_edge)
+            _debug_print("Check: has incoming edge?", has_incoming_edge)
+            _debug_print("Check: transition validity:", transition_valid)
+            _debug_print(
+                "Check: priority comparison:",
+                {
+                    "source_category": source_category,
+                    "candidate_category": candidate_category,
+                    "source_priority": source_priority,
+                    "candidate_priority": candidate_priority,
+                },
+            )
+
+            _debug_print(f"Checking neighbor: {candidate_name}")
+            _debug_print("  -> Passed initial check")
+
+            if source_category in identity_categories and candidate_category in identity_categories:
+                _debug_print("IDENTITY TRANSITION ALLOWED:", source_category, "->", candidate_category)
+            elif candidate_priority < source_priority:
+                _debug_print("REJECTED:", candidate_name, "| Reason: candidate priority lower than source")
+                _debug_print("  -> Filtered: lower priority than source")
+                continue
+
+            if source_category in identity_categories and candidate_category in identity_categories:
+                pass
+            elif source_category is None or not _is_valid_attack_transition(source_category, candidate_category):
+                rejection_reason = "source category unavailable" if source_category is None else "invalid transition direction"
+                _debug_print("REJECTED:", candidate_name, "| Reason:", rejection_reason)
+                _debug_print("  -> Filtered: invalid transition direction")
+                continue
+
+            computed_score_if_available = max(_to_int(record.get("attack_path_count"), default=0), 0)
+            _debug_print("  -> Score:", computed_score_if_available)
+
             candidate = {
-                "asset_name": str(record.get("asset_name") or ""),
-                "asset_type": str(props.get("asset_type") or ""),
+                "asset_name": candidate_name,
+                "asset_type": candidate_asset_type,
                 "labels": labels,
                 "path_length": _to_int(record.get("path_length"), default=1),
                 "attack_path_count": max(_to_int(record.get("attack_path_count"), default=1), 1),
@@ -246,6 +569,10 @@ def get_candidate_next_hops(asset_name: str) -> list[dict[str, Any]]:
             }
             if candidate["asset_name"]:
                 candidates.append(candidate)
+                _debug_print("ACCEPTED:", candidate_name)
+
+    _debug_print("\n=== CANDIDATE FUNCTION END ===")
+    _debug_print("Final candidates list:", candidates)
 
     return candidates
 
@@ -526,9 +853,62 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
     if not normalized_asset_name or not asset_exists(normalized_asset_name):
         raise LookupError(f"Asset '{asset_name}' not found")
 
+    _debug_print("\n=== ANALYSIS START ===")
+    _debug_print("Asset:", normalized_asset_name)
+
+    graph_context = _get_asset_graph_context(normalized_asset_name)
+    outgoing_edges = list(graph_context.get("outgoing_edges") or [])
+    incoming_edges = list(graph_context.get("incoming_edges") or [])
+    neighbors = list(graph_context.get("neighbors") or [])
+
+    _debug_print("\n--- GRAPH SUMMARY ---")
+    _debug_print("Total nodes:", graph_context.get("total_nodes", 0))
+    _debug_print("Total edges:", graph_context.get("total_edges", 0))
+
+    _debug_print("\n--- OUTGOING EDGES ---")
+    if outgoing_edges:
+        for edge in outgoing_edges:
+            _debug_print(edge)
+    else:
+        _debug_print("None")
+
+    _debug_print("\n--- INCOMING EDGES ---")
+    if incoming_edges:
+        for edge in incoming_edges:
+            _debug_print(edge)
+    else:
+        _debug_print("None")
+
+    _debug_print("\n--- ALL NEIGHBORS ---")
+    if neighbors:
+        for neighbor in neighbors:
+            _debug_print(neighbor)
+    else:
+        _debug_print("None")
+
+    _debug_print("\n--- EDGE TYPES FOR THIS ASSET ---")
+    edge_types = outgoing_edges + incoming_edges
+    if edge_types:
+        for edge in edge_types:
+            _debug_print("Type:", edge.get("label") or edge.get("type"))
+    else:
+        _debug_print("Type: None")
+
+    _debug_print("\n--- CANDIDATE BUILD TRACE ---")
+    if neighbors:
+        for neighbor in neighbors:
+            _debug_print(f"Checking neighbor: {neighbor}")
+            _debug_print("  -> Passed initial check")
+            _debug_print("  -> Score:", "N/A")
+    else:
+        _debug_print("No neighbors discovered for candidate evaluation")
+
     current_risk = get_asset_risk_summary(normalized_asset_name)
     source_context = _build_source_progression_context(normalized_asset_name)
     candidates = get_candidate_next_hops(normalized_asset_name)
+
+    _debug_print("\n=== POST CANDIDATE SUMMARY ===")
+    _debug_print("Candidates returned:", candidates)
 
     enriched_candidates: list[dict[str, Any]] = []
     best_feature_importance: list[dict[str, Any]] = []
@@ -594,20 +974,32 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
         key=lambda candidate: (-_to_float(candidate.get("combined_score"), 0.0), str(candidate.get("asset_name") or "")),
     )[:3]
 
-    best_candidate = select_best_next_target(enriched_candidates)
+    candidate_next_hops = enriched_candidates
+
+    _debug_print("\n--- FINAL CANDIDATES ---")
+    if candidate_next_hops:
+        for candidate in candidate_next_hops:
+            _debug_print(candidate)
+    else:
+        _debug_print("No candidates generated")
+
+    top_candidate = candidate_next_hops[0] if candidate_next_hops else None
     predicted_next_target: dict[str, Any] | None = None
 
-    if best_candidate:
+    is_database_terminal = _asset_profile_key("", [], normalized_asset_name) == "database"
+
+    if candidate_next_hops and not is_database_terminal and top_candidate:
+        candidate_confidence = _clamp(_to_float(top_candidate.get("combined_score"), 0.0), 0.0, 1.0)
         predicted_next_target = {
-            "asset_name": best_candidate.get("asset_name"),
-            "asset_type": best_candidate.get("asset_type"),
-            "predicted_label": best_candidate.get("prediction", {}).get("predicted_label", "UNKNOWN"),
-            "confidence": _to_float(best_candidate.get("prediction", {}).get("confidence"), 0.0),
-            "combined_score": _to_float(best_candidate.get("combined_score"), 0.0),
-            "reason": build_prediction_reason(candidate_feature_map.get(str(best_candidate.get("asset_name") or ""), {})),
+            "asset_name": top_candidate.get("asset_name"),
+            "asset_type": top_candidate.get("asset_type"),
+            "predicted_label": top_candidate.get("prediction", {}).get("predicted_label", "UNKNOWN"),
+            "confidence": candidate_confidence,
+            "combined_score": _to_float(top_candidate.get("combined_score"), 0.0),
+            "reason": "Top ranked attack path candidate",
         }
 
-        best_features = candidate_feature_map.get(str(best_candidate.get("asset_name") or ""), {})
+        best_features = candidate_feature_map.get(str(top_candidate.get("asset_name") or ""), {})
         impact_hint: str | None = None
         if best_features:
             if _to_int(best_features.get("has_critical_data"), default=0) == 1:
@@ -623,17 +1015,20 @@ def get_integrated_asset_analysis(asset_name: str) -> dict[str, Any]:
             predicted_next_target["impact_hint"] = impact_hint
 
         for candidate in candidates:
-            if candidate.get("asset_name") == best_candidate.get("asset_name"):
+            if candidate.get("asset_name") == top_candidate.get("asset_name"):
                 raw_importance = candidate.get("_feature_importance") or []
                 if isinstance(raw_importance, list):
                     best_feature_importance = raw_importance
                 break
 
+    _debug_print("\n--- PREDICTION ---")
+    _debug_print("Prediction object:", predicted_next_target)
+
     mitigation_context: dict[str, Any] = {
         "risk_level": current_risk.get("risk_level"),
     }
-    if best_candidate:
-        best_candidate_name = str(best_candidate.get("asset_name") or "")
+    if top_candidate:
+        best_candidate_name = str(top_candidate.get("asset_name") or "")
         mitigation_context.update(candidate_feature_map.get(best_candidate_name, {}))
 
     mitigations = generate_mitigations(mitigation_context)

@@ -25,18 +25,70 @@
 
       <main class="content" aria-label="CloudGuard dashboard">
 
-        <div class="dashboard-row top-row" aria-label="Top dashboard panels">
-          <section class="dashboard-card" aria-label="Risk dashboard panel">
-            <h2>Risk Dashboard</h2>
-            <p>Risk score will appear here</p>
-          </section>
+        <section class="dashboard-card intelligence-dashboard" aria-label="Security intelligence dashboard">
+          <div class="intelligence-header">
+            <h2>Security Intelligence Dashboard</h2>
+            <form id="asset-analysis-form" class="asset-selector-form" aria-label="Asset selector form">
+              <label for="asset-selector-input">Asset</label>
+              <input
+                id="asset-selector-input"
+                name="asset"
+                type="text"
+                placeholder="Enter asset name"
+                value="Web Server VM"
+                list="asset-name-options"
+                autocomplete="off"
+              />
+              <datalist id="asset-name-options">
+                <option value="Web Server VM"></option>
+                <option value="Application Server VM"></option>
+                <option value="Database Server"></option>
+                <option value="Storage Bucket"></option>
+                <option value="IAM Role"></option>
+                <option value="Web Server"></option>
+                <option value="Application Server"></option>
+                <option value="Database"></option>
+                <option value="Storage"></option>
+                <option value="IAM"></option>
+              </datalist>
+              <button type="submit" id="asset-analysis-submit">Refresh</button>
+            </form>
+          </div>
 
-          <section class="dashboard-card" id="prediction-panel" aria-label="Prediction panel">
-            <h2>Prediction Panel</h2>
-            <p class="prediction-summary">Predicted targets will appear here</p>
-            <div id="prediction-list"></div>
+          <div id="asset-analysis-feedback" class="asset-analysis-feedback" aria-live="polite">
+            Select an asset and click Refresh to load analysis.
+          </div>
+
+          <div class="intelligence-panels" aria-label="Asset intelligence panels">
+            <section class="intelligence-panel" aria-label="Asset analysis risk panel">
+              <h3>Risk Panel</h3>
+              <div id="asset-risk-panel-content" class="panel-content">No data available</div>
+            </section>
+
+            <section class="intelligence-panel" aria-label="Asset analysis prediction panel">
+              <h3>Prediction Panel</h3>
+              <div id="asset-prediction-panel-content" class="panel-content">No data available</div>
+            </section>
+
+            <section class="intelligence-panel" aria-label="Asset analysis candidate targets panel">
+              <h3>Candidate Targets Panel</h3>
+              <div id="asset-candidates-panel-content" class="panel-content">No data available</div>
+            </section>
+
+            <section class="intelligence-panel" aria-label="Asset analysis mitigation panel">
+              <div class="panel-heading-row">
+                <h3>Mitigation Panel</h3>
+                <button type="button" id="copy-recommendations-btn" class="secondary-button" disabled>Copy Recommendations</button>
+              </div>
+              <div id="asset-mitigations-panel-content" class="panel-content">No data available</div>
+            </section>
+          </div>
+
+          <section class="intelligence-panel narrative-panel" aria-label="Attack path narrative panel">
+            <h3>Attack Path Narrative</h3>
+            <div id="asset-narrative-panel-content" class="panel-content">No data available</div>
           </section>
-        </div>
+        </section>
 
         <!-- 🔥 GRAPH SECTION UPDATED -->
         <section class="dashboard-card graph-card" aria-label="Attack graph">
@@ -57,19 +109,15 @@
 
           <!-- Graph Container -->
           <div id="cy" style="width: 100%; height: 500px;"></div>
+          <div id="graph-node-details" class="graph-node-details">Select a node to view details</div>
         </section>
 
-        <div class="dashboard-row bottom-row" aria-label="Bottom dashboard panels">
-          <section class="dashboard-card" aria-label="Asset details panel">
-            <h2>Asset Details</h2>
-            <p>Select a node to view details</p>
-          </section>
-
-          <section class="dashboard-card" aria-label="Mitigation suggestions panel">
-            <h2>Mitigation Suggestions</h2>
-            <p>Recommendations will appear here</p>
-          </section>
-        </div>
+        <section class="dashboard-card" aria-label="Related high-risk assets section">
+          <h2>Related High-Risk Assets</h2>
+          <div id="related-high-risk-assets" class="risk-grid">
+            <div class="empty-state">No data available</div>
+          </div>
+        </section>
 
         <div id="status-output" class="status-bar" aria-live="polite">
           System ready. Waiting for analysis updates.

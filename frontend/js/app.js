@@ -1,10 +1,20 @@
 const API_BASE_URL = "http://localhost:8000";
+const DEFAULT_ASSET_NAME = "Web Server VM";
+const assetNameMap = {
+  Database: "Database Server",
+  Storage: "Storage Bucket",
+  "Web Server": "Web Server VM",
+  "Application Server": "Application Server VM",
+  IAM: "IAM Role"
+};
 let cachedRiskAssets = null;
 let riskMode = false;
 let predictionMode = false;
 let currentPredictions = [];
 let currentGraphData = null;
 let highRiskNodeIds = [];
+let currentAssetAnalysis = null;
+let selectedAssetName = DEFAULT_ASSET_NAME;
 
 console.log("App loaded");
 
@@ -19,6 +29,1108 @@ function updateStatus(message, state) {
 
   if (state) {
     statusOutput.classList.add(state);
+  }
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizeAssetName(assetName) {
+  const requestedAsset = String(assetName || "").trim();
+  return assetNameMap[requestedAsset] || requestedAsset || DEFAULT_ASSET_NAME;
+}
+
+function setAssetAnalysisFeedback(message, state) {
+  const feedback = document.getElementById("asset-analysis-feedback");
+  if (!feedback) {
+    return;
+  }
+
+  feedback.textContent = message;
+  feedback.classList.remove("loading", "success", "error");
+
+  if (state) {
+    feedback.classList.add(state);
+  }
+}
+
+function renderPanelLoading(containerId, message = "Loading...") {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+}
+
+function normalizeRiskLevelLabel(level, fallbackRiskScore) {
+  const raw = String(level || "").trim().toUpperCase();
+  if (raw === "LOW" || raw === "MEDIUM" || raw === "HIGH" || raw === "CRITICAL") {
+    return raw;
+  }
+
+  const score = Number(fallbackRiskScore);
+  if (Number.isFinite(score) && score >= 90) {
+    return "CRITICAL";
+  }
+
+  return getRiskLevel(score);
+}
+
+function getRiskLevelToneClass(level) {
+  const normalized = String(level || "").toUpperCase();
+  if (normalized === "CRITICAL") {
+    return "critical";
+  }
+  if (normalized === "HIGH") {
+    return "high";
+  }
+  if (normalized === "MEDIUM") {
+    return "medium";
+  }
+  return "low";
+}
+
+function getSeverityPriorityBadgeClass(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (normalized === "HIGH" || normalized === "P1") {
+    return "badge-red";
+  }
+  if (normalized === "MEDIUM" || normalized === "P2") {
+    return "badge-orange";
+  }
+  if (normalized === "LOW" || normalized === "P3") {
+    return "badge-green";
+  }
+  return "badge-medium";
+}
+
+function formatFloat(value, digits = 2) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return "N/A";
+  }
+  return numericValue.toFixed(digits);
+}
+
+function clampPercent(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, numericValue * 100));
+}
+
+function formatAssetTypeLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "Unknown";
+  }
+
+  if (/^iam[\s_-]*role$/i.test(raw) || /^iamrole$/i.test(raw)) {
+    return "IAM Role";
+  }
+
+  if (/^user$/i.test(raw)) {
+    return "User";
+  }
+
+  if (/^vm$/i.test(raw)) {
+    return "VM";
+  }
+
+  if (/^database$/i.test(raw)) {
+    return "Database";
+  }
+
+  if (/^bucket$/i.test(raw)) {
+    return "Bucket";
+  }
+
+  if (/^iam$/i.test(raw)) {
+    return "IAM";
+  }
+
+  if (raw === raw.toUpperCase() && raw.length <= 4) {
+    return raw;
+  }
+
+  return raw
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function normalizeCandidateType(candidate) {
+  const rawType = String(candidate?.asset_type || candidate?.type || "").trim();
+  const rawLabel = String(Array.isArray(candidate?.labels) && candidate.labels.length > 0 ? candidate.labels[0] : "").trim();
+  const combined = `${rawType} ${rawLabel} ${candidate?.asset_name || ""}`.toLowerCase();
+
+  if (combined.includes("iam role") || combined.includes("iamrole") || combined.includes("identity") || combined.includes("user")) {
+    return "IDENTITY";
+  }
+
+  if (combined.includes("database") || combined.includes("db")) {
+    return "DATABASE";
+  }
+
+  if (combined.includes("bucket") || combined.includes("storage") || combined.includes("s3")) {
+    return "BUCKET";
+  }
+
+  if (combined.includes("web") || combined.includes("vm") || combined.includes("server") || combined.includes("application") || combined.includes("compute")) {
+    return "VM";
+  }
+
+  return "UNKNOWN";
+}
+
+function getCandidateReason(candidate) {
+  const typeCategory = normalizeCandidateType(candidate);
+
+  if (typeCategory === "IDENTITY") {
+    return "Privilege escalation path";
+  }
+
+  if (typeCategory === "DATABASE") {
+    return "Sensitive data exposure risk";
+  }
+
+  if (typeCategory === "BUCKET") {
+    return "Public access / misconfiguration risk";
+  }
+
+  if (typeCategory === "VM") {
+    return "Lateral movement risk";
+  }
+
+  return "Potential attack path risk";
+}
+
+function getCandidateMitigationGuidance(candidate) {
+  const typeCategory = normalizeCandidateType(candidate);
+
+  if (typeCategory === "IDENTITY") {
+    return [
+      "Enforce MFA for all human and service identities.",
+      "Restrict IAM role trust policies and session duration.",
+      "Apply least privilege permissions and review role assumptions."
+    ];
+  }
+
+  if (typeCategory === "DATABASE") {
+    return [
+      "Encrypt sensitive data at rest and in transit.",
+      "Restrict database network access to trusted sources.",
+      "Rotate credentials and audit privileged access paths."
+    ];
+  }
+
+  if (typeCategory === "BUCKET") {
+    return [
+      "Remove public access and validate bucket policies.",
+      "Review ACLs, lifecycle rules, and cross-account access.",
+      "Enable access logging and detect misconfiguration drift."
+    ];
+  }
+
+  if (typeCategory === "VM") {
+    return [
+      "Segment workloads and limit east-west traffic.",
+      "Tighten firewall rules and reduce exposed services.",
+      "Patch guest systems and remove unnecessary privileges."
+    ];
+  }
+
+  return [
+    "Review access boundaries and reduce unnecessary exposure.",
+    "Validate logging, alerting, and least-privilege controls.",
+    "Confirm the asset is covered by a documented hardening baseline."
+  ];
+}
+
+function getTopCandidateTargets(assetAnalysis, limit = 3) {
+  const candidates = Array.isArray(assetAnalysis?.candidate_next_hops) ? assetAnalysis.candidate_next_hops : [];
+  const deduped = [];
+  const seen = new Set();
+
+  candidates
+    .slice()
+    .sort((left, right) => Number(right?.combined_score || 0) - Number(left?.combined_score || 0))
+    .forEach((candidate) => {
+      const key = normalize(candidate?.asset_name || candidate?.node || candidate?.id || candidate?.target || "");
+      if (!key || seen.has(key)) {
+        return;
+      }
+
+      seen.add(key);
+      deduped.push(candidate);
+    });
+
+  if (deduped.length === 0 && assetAnalysis?.predicted_next_target?.asset_name) {
+    deduped.push({
+      ...assetAnalysis.predicted_next_target,
+      combined_score: Number(assetAnalysis.predicted_next_target?.combined_score || assetAnalysis.predicted_next_target?.confidence || 0),
+      path_length: assetAnalysis.predicted_next_target?.path_length || 1,
+      labels: assetAnalysis.predicted_next_target?.labels || []
+    });
+  }
+
+  return deduped.slice(0, limit);
+}
+
+function getAssetAnalysisSourceName(assetAnalysis) {
+  return String(assetAnalysis?.asset_name || selectedAssetName || DEFAULT_ASSET_NAME || "").trim();
+}
+
+function getAnalysisAssetType(assetAnalysis) {
+  const assetName = String(assetAnalysis?.asset_name || selectedAssetName || "").trim();
+  const currentRiskType = String(assetAnalysis?.current_risk?.asset_type || assetAnalysis?.asset_type || "").trim();
+  const combined = `${currentRiskType} ${assetName}`.toLowerCase();
+
+  if (combined.includes("database") || combined.includes("db")) {
+    return "DATABASE";
+  }
+
+  if (combined.includes("bucket") || combined.includes("storage") || combined.includes("s3")) {
+    return "BUCKET";
+  }
+
+  if (combined.includes("iam role") || combined.includes("iamrole") || combined.includes("identity") || combined.includes("user")) {
+    return "IDENTITY";
+  }
+
+  if (combined.includes("web") || combined.includes("vm") || combined.includes("server") || combined.includes("application")) {
+    return "VM";
+  }
+
+  return "UNKNOWN";
+}
+
+function isTerminalAssetAnalysis(assetAnalysis) {
+  const assetType = getAnalysisAssetType(assetAnalysis);
+  return assetType === "DATABASE" || assetType === "BUCKET";
+}
+
+function getTerminalAssetMessage(assetAnalysis) {
+  if (getAnalysisAssetType(assetAnalysis) === "DATABASE") {
+    return "Terminal Asset – End of Attack Path. No further lateral movement possible.";
+  }
+
+  return "No viable attack paths from this asset.";
+}
+
+function getNoReachableTargetsMessage() {
+  return "No reachable next targets. This asset does not lead to further compromise paths.";
+}
+
+function getAttackNarrativeEmptyMessage() {
+  return "Attack path ends at this asset.";
+}
+
+function renderTerminalBadge() {
+  return '<span class="terminal-node-badge">TERMINAL NODE</span>';
+}
+
+function getGraphNodeLabel(node) {
+  if (!node) {
+    return "";
+  }
+
+  if (typeof node.data === "function") {
+    return String(node.data("label") || node.data("name") || node.data("id") || "").trim();
+  }
+
+  const data = node.data || node;
+  return String(data?.label || data?.name || data?.id || "").trim();
+}
+
+function getGraphPathNodeId(node) {
+  if (!node) {
+    return "";
+  }
+
+  if (typeof node.id === "function") {
+    return String(node.id() || "").trim();
+  }
+
+  const data = node.data || node;
+  return String(data?.id || data?.label || data?.name || "").trim();
+}
+
+function findGraphPath(sourceName, targetName) {
+  const cy = window.cloudguardCy;
+  if (!cy || !sourceName || !targetName) {
+    return null;
+  }
+
+  const sourceNode = findNodeByAssetName(sourceName);
+  const targetNode = findNodeByAssetName(targetName);
+
+  if (!sourceNode || sourceNode.empty() || !targetNode || targetNode.empty()) {
+    return null;
+  }
+
+  const startId = String(sourceNode.id());
+  const goalId = String(targetNode.id());
+  const queue = [startId];
+  const visited = new Set([startId]);
+  const previous = new Map();
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    if (currentId === goalId) {
+      break;
+    }
+
+    const currentNode = cy.getElementById(currentId);
+    if (!currentNode || currentNode.empty()) {
+      continue;
+    }
+
+    currentNode.outgoers("edge").forEach((edge) => {
+      const nextNode = edge.target();
+      const nextId = String(nextNode.id());
+      if (!nextId || visited.has(nextId)) {
+        return;
+      }
+
+      visited.add(nextId);
+      previous.set(nextId, {
+        nodeId: currentId,
+        edgeId: String(edge.id())
+      });
+      queue.push(nextId);
+    });
+  }
+
+  if (!visited.has(goalId)) {
+    return null;
+  }
+
+  const nodeIds = [goalId];
+  const edgeIds = [];
+  let walkerId = goalId;
+
+  while (walkerId !== startId) {
+    const step = previous.get(walkerId);
+    if (!step) {
+      return null;
+    }
+
+    edgeIds.unshift(step.edgeId);
+    nodeIds.unshift(step.nodeId);
+    walkerId = step.nodeId;
+  }
+
+  const pathNodes = nodeIds
+    .map((nodeId) => cy.getElementById(nodeId))
+    .filter((node) => !!node && !node.empty());
+  const pathEdges = edgeIds
+    .map((edgeId) => cy.getElementById(edgeId))
+    .filter((edge) => !!edge && !edge.empty());
+
+  return {
+    nodes: pathNodes,
+    edges: pathEdges
+  };
+}
+
+function buildPathStepVerb(fromLabel, toLabel, index) {
+  const source = normalize(fromLabel);
+  const target = normalize(toLabel);
+
+  if (source.includes("internet")) {
+    return "exposes";
+  }
+
+  if (source.includes("iamrole") || source.includes("identity") || source.includes("user")) {
+    return "has access to";
+  }
+
+  if (source.includes("database")) {
+    return "contains data for";
+  }
+
+  if (source.includes("bucket") || source.includes("storage")) {
+    return "feeds";
+  }
+
+  if (target.includes("iamrole") || target.includes("identity") || target.includes("user")) {
+    return index === 0 ? "can escalate toward" : "leads to";
+  }
+
+  return "connects to";
+}
+
+function buildAttackPathNarrative(assetAnalysis, candidate, graphPath) {
+  const sourceName = getAssetAnalysisSourceName(assetAnalysis);
+  const targetName = String(candidate?.asset_name || assetAnalysis?.predicted_next_target?.asset_name || "Unknown").trim();
+  const sourceType = formatAssetTypeLabel(assetAnalysis?.current_risk?.asset_type || assetAnalysis?.asset_type || "");
+  const targetType = formatAssetTypeLabel(candidate?.asset_type || assetAnalysis?.predicted_next_target?.asset_type || "");
+
+  if (graphPath && Array.isArray(graphPath.nodes) && graphPath.nodes.length > 1) {
+    const labels = graphPath.nodes.map((node) => getGraphNodeLabel(node) || getGraphPathNodeId(node)).filter(Boolean);
+    const steps = [];
+
+    graphPath.edges.forEach((edge, index) => {
+      const fromLabel = labels[index] || getGraphNodeLabel(edge.source());
+      const toLabel = labels[index + 1] || getGraphNodeLabel(edge.target());
+      const verb = buildPathStepVerb(fromLabel, toLabel, index);
+      steps.push({
+        label: `Step ${index + 1}`,
+        text: `${fromLabel} ${verb} ${toLabel}`,
+        final: index === graphPath.edges.length - 1
+      });
+    });
+
+    return {
+      title: "Attack progression:",
+      progression: labels.join(" → "),
+      steps,
+      sourceName,
+      targetName,
+      sourceType,
+      targetType
+    };
+  }
+
+  const fallbackSteps = [
+    {
+      label: "Step 1",
+      text: `${sourceName} can reach ${targetName}`,
+      final: true
+    }
+  ];
+
+  if (targetType && targetType !== "Unknown") {
+    fallbackSteps.push({
+      label: "Step 2",
+      text: `${targetName} is a ${targetType} target`,
+      final: true
+    });
+  }
+
+  return {
+    title: "Attack progression:",
+    progression: `${sourceName} → ${targetName}`,
+    steps: fallbackSteps,
+    sourceName,
+    targetName,
+    sourceType,
+    targetType
+  };
+}
+
+function highlightAnalysisPath(candidateName, options = {}) {
+  const cy = window.cloudguardCy;
+  if (!cy) {
+    return false;
+  }
+
+  const targetName = String(candidateName || "").trim();
+  const sourceName = getAssetAnalysisSourceName(currentAssetAnalysis || {});
+  if (!targetName) {
+    return false;
+  }
+
+  const graphPath = findGraphPath(sourceName, targetName);
+  const targetNode = findNodeByAssetName(targetName);
+  const sourceNode = findNodeByAssetName(sourceName);
+
+  resetPredictionHighlight();
+
+  if (graphPath && graphPath.nodes.length > 0) {
+    cy.batch(() => {
+      graphPath.nodes.forEach((node, index) => {
+        node.addClass(index === graphPath.nodes.length - 1 ? "analysis-primary-target" : "analysis-path-node");
+      });
+      graphPath.edges.forEach((edge) => edge.addClass("analysis-path-edge"));
+
+      if (sourceNode && !sourceNode.empty()) {
+        sourceNode.addClass("analysis-source-node");
+      }
+    });
+
+    if (options.focus && targetNode && !targetNode.empty()) {
+      cy.animate(
+        {
+          fit: {
+            eles: graphPath.nodes,
+            padding: 75
+          }
+        },
+        {
+          duration: 280
+        }
+      );
+    }
+
+    if (targetNode && !targetNode.empty()) {
+      showNodeDetails(targetNode.data());
+    }
+
+    return true;
+  }
+
+  if (targetNode && !targetNode.empty()) {
+    cy.batch(() => {
+      targetNode.addClass("analysis-primary-target");
+      if (sourceNode && !sourceNode.empty()) {
+        sourceNode.addClass("analysis-source-node");
+      }
+    });
+
+    if (options.focus) {
+      cy.animate(
+        {
+          fit: {
+            eles: targetNode,
+            padding: 75
+          }
+        },
+        {
+          duration: 280
+        }
+      );
+    }
+
+    showNodeDetails(targetNode.data());
+
+    return true;
+  }
+
+  return false;
+}
+
+function renderAttackPathNarrativePanel(assetAnalysis, candidate) {
+  const container = document.getElementById("asset-narrative-panel-content");
+  if (!container) {
+    return;
+  }
+
+  const sourceName = getAssetAnalysisSourceName(assetAnalysis);
+  const targetCandidate = candidate || getTopCandidateTargets(assetAnalysis, 1)[0] || assetAnalysis?.predicted_next_target || null;
+  const hasNoMovement = Array.isArray(assetAnalysis?.candidate_next_hops) && assetAnalysis.candidate_next_hops.length === 0 && !assetAnalysis?.predicted_next_target;
+  if (!sourceName || hasNoMovement || !targetCandidate) {
+    container.innerHTML = `<div class="empty-state">${escapeHtml(getAttackNarrativeEmptyMessage())}</div>`;
+    return;
+  }
+
+  const graphPath = findGraphPath(sourceName, targetCandidate.asset_name || "");
+  const narrative = buildAttackPathNarrative(assetAnalysis, targetCandidate, graphPath);
+
+  const stepsMarkup = narrative.steps.map((step) => `
+    <li class="narrative-step ${step.final ? "final-step" : ""}">
+      <span class="narrative-step-label">${escapeHtml(step.label)}</span>
+      <span class="narrative-step-text">${escapeHtml(step.text)}</span>
+    </li>
+  `).join("");
+
+  container.innerHTML = `
+    <div class="narrative-summary">
+      <p class="narrative-progress">${escapeHtml(narrative.title)} <strong>${escapeHtml(narrative.progression)}</strong></p>
+      <p class="narrative-meta">Primary target: <strong class="narrative-target">${escapeHtml(formatAssetTypeLabel(targetCandidate.asset_type) || targetCandidate.asset_name)}</strong></p>
+    </div>
+    <ol class="narrative-step-list">
+      ${stepsMarkup}
+    </ol>
+  `;
+}
+
+function syncAnalysisGraphHighlight(assetAnalysis, candidate) {
+  const targetName = String(candidate?.asset_name || assetAnalysis?.predicted_next_target?.asset_name || "").trim();
+  if (!targetName) {
+    resetPredictionHighlight();
+    return;
+  }
+
+  highlightAnalysisPath(targetName, { focus: false });
+}
+
+function buildCandidateDisplaySet(assetAnalysis) {
+  return getTopCandidateTargets(assetAnalysis, 3).map((candidate, index) => ({
+    ...candidate,
+    rank: index + 1,
+    reason: getCandidateReason(candidate),
+    displayType: formatAssetTypeLabel(candidate?.asset_type),
+    confidencePercent: clampPercent(candidate?.combined_score ?? candidate?.confidence ?? 0)
+  }));
+}
+
+function registerCandidateInteractions(container, assetAnalysis, candidateList) {
+  if (!container) {
+    return;
+  }
+
+  const cards = container.querySelectorAll("[data-candidate-name]");
+  cards.forEach((card) => {
+    const candidateName = String(card.getAttribute("data-candidate-name") || "").trim();
+    if (!candidateName) {
+      return;
+    }
+
+    const candidate = candidateList.find((item) => String(item?.asset_name || "").trim() === candidateName) || null;
+    const handlePreview = () => {
+      if (candidate) {
+        highlightAnalysisPath(candidate.asset_name, { focus: false });
+        renderAttackPathNarrativePanel(assetAnalysis, candidate);
+      }
+    };
+
+    const handleFocus = () => {
+      const focused = candidate ? highlightAnalysisPath(candidate.asset_name, { focus: true }) : focusAndHighlightNodeByAssetName(candidateName, true);
+      if (!focused) {
+        updateStatus(`Candidate ${candidateName} not found in graph`, "error");
+        return;
+      }
+
+      renderAttackPathNarrativePanel(assetAnalysis, candidate || null);
+      updateStatus(`Focused candidate ${candidateName} in graph`, "success");
+    };
+
+    card.addEventListener("mouseenter", handlePreview);
+    card.addEventListener("focus", handlePreview);
+    card.addEventListener("mouseleave", () => {
+      const primaryCandidate = candidateList[0] || null;
+      if (primaryCandidate) {
+        highlightAnalysisPath(primaryCandidate.asset_name, { focus: false });
+        renderAttackPathNarrativePanel(assetAnalysis, primaryCandidate);
+      }
+    });
+    card.addEventListener("blur", () => {
+      const primaryCandidate = candidateList[0] || null;
+      if (primaryCandidate) {
+        highlightAnalysisPath(primaryCandidate.asset_name, { focus: false });
+        renderAttackPathNarrativePanel(assetAnalysis, primaryCandidate);
+      }
+    });
+    card.addEventListener("click", handleFocus);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handleFocus();
+      }
+    });
+  });
+}
+
+function renderAssetRiskPanel(assetAnalysis) {
+  const container = document.getElementById("asset-risk-panel-content");
+  if (!container) {
+    return;
+  }
+
+  const assetName = assetAnalysis?.asset_name || selectedAssetName || "Unknown";
+  const currentRisk = assetAnalysis?.current_risk || {};
+  const riskScore = currentRisk?.risk_score;
+  const riskLevel = normalizeRiskLevelLabel(currentRisk?.risk_level, riskScore);
+  const explanation = currentRisk?.explanation || "No explanation provided";
+
+  container.innerHTML = `
+    <div class="metric-row">
+      <span class="metric-label">Asset</span>
+      <span class="metric-value">${escapeHtml(assetName)}</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Risk Score</span>
+      <span class="metric-value">${escapeHtml(formatRiskValue(riskScore))}</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Risk Level</span>
+      <span class="risk-level ${getRiskLevelToneClass(riskLevel)}">${escapeHtml(riskLevel)}</span>
+    </div>
+    <p class="card-text">${escapeHtml(explanation)}</p>
+  `;
+}
+
+function renderAssetPredictionPanel(assetAnalysis, candidateList = null) {
+  const container = document.getElementById("asset-prediction-panel-content");
+  if (!container) {
+    return;
+  }
+
+  const candidates = Array.isArray(candidateList) ? candidateList : buildCandidateDisplaySet(assetAnalysis);
+  if (candidates.length === 0) {
+    container.innerHTML = `
+      <div class="prediction-summary terminal-summary">
+        ${isTerminalAssetAnalysis(assetAnalysis) ? renderTerminalBadge() : ""}
+        <div class="empty-state">${escapeHtml(getTerminalAssetMessage(assetAnalysis))}</div>
+      </div>
+    `;
+    return;
+  }
+
+  const primaryCandidate = candidates[0];
+  const primaryConfidence = clampPercent(primaryCandidate?.confidence ?? primaryCandidate?.combined_score ?? 0);
+  const primaryType = formatAssetTypeLabel(primaryCandidate?.asset_type);
+  const primaryReason = getCandidateReason(primaryCandidate);
+  const secondaryCandidates = candidates.slice(0, 3);
+
+  const candidateCards = secondaryCandidates.map((candidate, index) => {
+    const isPrimary = index === 0;
+    const scorePercent = clampPercent(candidate?.confidence ?? candidate?.combined_score ?? 0);
+    const typeLabel = formatAssetTypeLabel(candidate?.asset_type);
+    const reason = getCandidateReason(candidate);
+
+    return `
+      <article class="prediction-item ${isPrimary ? "primary-prediction-item" : ""}" data-candidate-name="${escapeHtml(candidate?.asset_name || "")}" tabindex="0" role="button" aria-label="Inspect ${escapeHtml(candidate?.asset_name || "candidate")}">
+        <div class="prediction-item-row">
+          <div class="prediction-label">
+            <span class="prediction-dot"></span>
+            <strong>${isPrimary ? "Primary Prediction" : `#${index + 1}`}</strong>
+          </div>
+          <span class="prediction-confidence">${escapeHtml(typeLabel)}</span>
+        </div>
+        <div class="prediction-item-row">
+          <strong>${escapeHtml(candidate?.asset_name || "Unknown")}</strong>
+          <span class="prediction-confidence">${escapeHtml(formatFloat(candidate?.combined_score ?? candidate?.confidence ?? 0, 2))}</span>
+        </div>
+        <div class="prediction-bar-track" aria-hidden="true">
+          <div class="prediction-bar-fill" style="width: ${scorePercent.toFixed(1)}%"></div>
+        </div>
+        <p class="prediction-reason">${escapeHtml(reason)}</p>
+      </article>
+    `;
+  }).join("");
+
+  container.innerHTML = `
+    <div class="prediction-summary">
+      <div class="primary-prediction-banner">
+        <div class="primary-prediction-header">
+          <span class="primary-prediction-badge">Primary Prediction</span>
+          <span class="primary-prediction-confidence">${primaryConfidence.toFixed(1)}%</span>
+        </div>
+        <div class="primary-prediction-name">${escapeHtml(primaryCandidate?.asset_name || "Unknown")}</div>
+        <div class="primary-prediction-meta">${escapeHtml(primaryType)} · ${escapeHtml(primaryReason)}</div>
+        <div class="prediction-bar-track">
+          <div class="prediction-bar-fill" style="width: ${primaryConfidence.toFixed(1)}%"></div>
+        </div>
+      </div>
+      <div class="prediction-summary-note">Top 3 candidates ranked by combined score.</div>
+    </div>
+    <div class="prediction-stack">${candidateCards}</div>
+  `;
+
+  registerCandidateInteractions(container, assetAnalysis, candidates);
+}
+
+function renderAssetCandidatesPanel(assetAnalysis, candidateList = null) {
+  const container = document.getElementById("asset-candidates-panel-content");
+  if (!container) {
+    return;
+  }
+
+  const candidates = Array.isArray(candidateList) ? candidateList : buildCandidateDisplaySet(assetAnalysis);
+  if (candidates.length === 0) {
+    container.innerHTML = `<div class="empty-state">${escapeHtml(getNoReachableTargetsMessage())}</div>`;
+    return;
+  }
+
+  const cards = candidates.map((candidate, index) => {
+    const candidateName = String(candidate?.asset_name || "Unknown");
+    const isPrimary = index === 0;
+    return `
+      <article class="candidate-card ${isPrimary ? "candidate-card-primary" : ""}" data-candidate-name="${escapeHtml(candidateName)}" tabindex="0" role="button" aria-label="Focus ${escapeHtml(candidateName)} in attack graph">
+        <div class="candidate-card-header">
+          <span class="candidate-rank">${isPrimary ? "Primary" : `#${index + 1}`}</span>
+          <span class="candidate-type">${escapeHtml(formatAssetTypeLabel(candidate?.asset_type))}</span>
+        </div>
+        <h4 class="card-title">${escapeHtml(candidateName)}</h4>
+        <p class="card-text">${escapeHtml(getCandidateReason(candidate))}</p>
+        <div class="metric-row">
+          <span class="metric-label">Combined Score</span>
+          <span class="metric-value">${escapeHtml(formatFloat(candidate?.combined_score, 2))}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Path Length</span>
+          <span class="metric-value">${escapeHtml(String(candidate?.path_length ?? "N/A"))}</span>
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  container.innerHTML = `<div class="candidate-grid">${cards}</div>`;
+  registerCandidateInteractions(container, assetAnalysis, candidates);
+}
+
+function renderRelatedHighRiskAssets(assets) {
+  const container = document.getElementById("related-high-risk-assets");
+  if (!container) {
+    return;
+  }
+
+  const safeAssets = Array.isArray(assets) ? assets : [];
+  if (safeAssets.length === 0) {
+    container.innerHTML = `<div class="empty-state">No data available</div>`;
+    return;
+  }
+
+  const cards = safeAssets
+    .map((asset) => {
+      const level = String(asset?.risk_level || "LOW").toUpperCase();
+      return `
+        <article class="risk-card ${escapeHtml(level.toLowerCase())}" data-asset-name="${escapeHtml(asset?.name || "")}">
+          <div class="risk-title">${escapeHtml(asset?.name || "Unknown")} <span class="badge ${getRiskBadgeClass(level)}">${escapeHtml(level)}</span></div>
+          <div class="risk-score">Risk Score: ${escapeHtml(formatRiskValue(asset?.risk_score))}</div>
+          <div class="risk-reason">Reason: ${escapeHtml(asset?.reason || "No reason provided")}</div>
+        </article>
+      `;
+    })
+    .join("");
+
+  container.innerHTML = cards;
+
+  container.querySelectorAll(".risk-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const assetName = card.getAttribute("data-asset-name") || "";
+      focusAndHighlightNodeByAssetName(assetName, true);
+    });
+  });
+}
+
+function findNodeByAssetName(assetName) {
+  const cy = window.cloudguardCy;
+  const name = String(assetName || "").trim();
+
+  if (!cy || !name) {
+    return null;
+  }
+
+  const normalizedName = normalize(name);
+  return cy.nodes().filter((node) => {
+    const label = normalize(node.data("label") || node.data("id") || node.id());
+    return label === normalizedName;
+  }).first();
+}
+
+function focusAndHighlightNodeByAssetName(assetName, animate = false) {
+  const cy = window.cloudguardCy;
+  const node = findNodeByAssetName(assetName);
+
+  if (!cy || !node || node.empty()) {
+    return false;
+  }
+
+  cy.batch(() => {
+    cy.nodes().removeClass("predicted-focus pulse");
+    node.addClass("predicted-focus");
+  });
+
+  if (animate) {
+    cy.animate(
+      {
+        fit: {
+          eles: node,
+          padding: 65
+        }
+      },
+      { duration: 350 }
+    );
+  }
+
+  node.addClass("pulse");
+  setTimeout(() => {
+    if (window.cloudguardCy) {
+      node.removeClass("pulse");
+    }
+  }, 480);
+
+  highlightConnectedEdges(node.id());
+  showNodeDetails(node.data());
+  return true;
+}
+
+function highlightPredictedTargetInGraph(assetAnalysis) {
+  const primaryCandidate = getTopCandidateTargets(assetAnalysis, 1)[0] || assetAnalysis?.predicted_next_target || null;
+  const predictedAssetName = String(primaryCandidate?.asset_name || "").trim();
+  if (!predictedAssetName) {
+    resetPredictionHighlight();
+    return;
+  }
+
+  highlightAnalysisPath(predictedAssetName, { focus: false });
+}
+
+function buildRecommendationsText(mitigations, assetName) {
+  const safeMitigations = Array.isArray(mitigations) ? mitigations : [];
+  const title = `CloudGuard AI Mitigation Recommendations\nAsset: ${assetName || "Unknown"}`;
+  const lines = safeMitigations.map((item, index) => {
+    const recommendation = item?.recommendation || "N/A";
+    const reason = item?.reason || "N/A";
+    const severity = item?.severity || "N/A";
+    const priority = item?.priority || "N/A";
+    return `${index + 1}. ${item?.title || "Untitled"}\n   Severity: ${severity} | Priority: ${priority}\n   Recommendation: ${recommendation}\n   Reason: ${reason}`;
+  });
+
+  return [title, "", ...lines].join("\n");
+}
+
+function renderAssetMitigationPanel(assetAnalysis, candidateList = null) {
+  const container = document.getElementById("asset-mitigations-panel-content");
+  const copyButton = document.getElementById("copy-recommendations-btn");
+  if (!container) {
+    return;
+  }
+
+  const mitigations = Array.isArray(assetAnalysis?.mitigations) ? assetAnalysis.mitigations : [];
+  const candidates = Array.isArray(candidateList) ? candidateList : buildCandidateDisplaySet(assetAnalysis);
+  const primaryCandidate = candidates[0] || assetAnalysis?.predicted_next_target || null;
+  const contextualMitigations = primaryCandidate ? getCandidateMitigationGuidance(primaryCandidate) : [];
+
+  if (copyButton) {
+    copyButton.disabled = mitigations.length === 0 && contextualMitigations.length === 0;
+  }
+
+  const contextualMarkup = contextualMitigations.length > 0
+    ? `
+      <div class="contextual-mitigation-block">
+        <div class="contextual-mitigation-heading">Context-aware guidance for ${escapeHtml(formatAssetTypeLabel(primaryCandidate?.asset_type || "Unknown"))}</div>
+        <ul class="contextual-mitigation-list">
+          ${contextualMitigations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      </div>
+    `
+    : "";
+
+  const cards = mitigations.length > 0
+    ? mitigations
+        .map((item) => {
+          const severity = String(item?.severity || "LOW").toUpperCase();
+          const priority = String(item?.priority || "P3").toUpperCase();
+
+          return `
+            <article class="mitigation-card">
+              <h4 class="card-title">${escapeHtml(item?.title || "Untitled")}</h4>
+              <div class="badge-row">
+                <span class="badge ${getSeverityPriorityBadgeClass(severity)}">${escapeHtml(severity)}</span>
+                <span class="badge ${getSeverityPriorityBadgeClass(priority)}">${escapeHtml(priority)}</span>
+              </div>
+              <p class="card-text">${escapeHtml(item?.recommendation || "No recommendation provided")}</p>
+              <p class="card-text"><strong>Reason:</strong> ${escapeHtml(item?.reason || "No reason provided")}</p>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="empty-state">No backend mitigation data available</div>`;
+
+  container.innerHTML = `
+    ${contextualMarkup}
+    <div class="mitigation-grid">${cards}</div>
+  `;
+}
+
+function renderAssetAnalysisDashboard(assetAnalysis) {
+  const candidateList = buildCandidateDisplaySet(assetAnalysis);
+  const primaryCandidate = candidateList[0] || assetAnalysis?.predicted_next_target || null;
+
+  renderAssetRiskPanel(assetAnalysis);
+  renderAssetPredictionPanel(assetAnalysis, candidateList);
+  renderAssetCandidatesPanel(assetAnalysis, candidateList);
+  renderAttackPathNarrativePanel(assetAnalysis, primaryCandidate);
+  renderAssetMitigationPanel(assetAnalysis, candidateList);
+
+  if (candidateList.length > 0) {
+    syncAnalysisGraphHighlight(assetAnalysis, primaryCandidate);
+  } else {
+    resetPredictionHighlight();
+  }
+}
+
+async function fetchAssetAnalysis(assetName) {
+  const requestedAsset = String(assetName || "").trim() || DEFAULT_ASSET_NAME;
+  const normalizedAsset = normalizeAssetName(requestedAsset);
+  selectedAssetName = normalizedAsset;
+
+  renderPanelLoading("asset-risk-panel-content", "Analyzing attack paths...");
+  renderPanelLoading("asset-prediction-panel-content", "Analyzing attack paths...");
+  renderPanelLoading("asset-candidates-panel-content", "Analyzing attack paths...");
+  renderPanelLoading("asset-mitigations-panel-content", "Analyzing attack paths...");
+  renderPanelLoading("asset-narrative-panel-content", "Analyzing attack paths...");
+
+  setAssetAnalysisFeedback(`Analyzing attack paths for ${normalizedAsset}...`, "loading");
+  updateStatus(`Analyzing attack paths for ${normalizedAsset}...`, "loading");
+
+  try {
+    const encodedAsset = encodeURIComponent(normalizedAsset);
+    const response = await fetch(`${API_BASE_URL}/asset-analysis/${encodedAsset}`, {
+      method: "GET"
+    });
+
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const errorPayload = await response.json();
+        if (errorPayload?.detail) {
+          detail = String(errorPayload.detail);
+        }
+      } catch (_error) {
+        // Ignore JSON parse error and preserve HTTP status fallback.
+      }
+
+      throw new Error(detail);
+    }
+
+    const payload = await response.json();
+    currentAssetAnalysis = payload && typeof payload === "object" ? payload : {};
+
+    const normalizedAssetName = normalizeAssetName(currentAssetAnalysis?.asset_name || normalizedAsset);
+    selectedAssetName = normalizedAssetName;
+
+    const selectorInput = document.getElementById("asset-selector-input");
+    if (selectorInput) {
+      selectorInput.value = normalizedAssetName;
+    }
+
+    renderAssetAnalysisDashboard(currentAssetAnalysis);
+    await refreshRelatedHighRiskAssets({ silent: true });
+    setAssetAnalysisFeedback(`Loaded analysis for ${normalizedAssetName}`, "success");
+    updateStatus(`Asset analysis loaded for ${normalizedAssetName}`, "success");
+  } catch (error) {
+    currentAssetAnalysis = null;
+    renderAssetAnalysisDashboard(currentAssetAnalysis);
+
+    const message = error instanceof Error ? error.message : "Failed to load asset analysis";
+    setAssetAnalysisFeedback(`Failed to load analysis: ${message}`, "error");
+    updateStatus("Failed to load asset analysis", "error");
+  }
+}
+
+async function copyRecommendationsToClipboard() {
+  const mitigations = Array.isArray(currentAssetAnalysis?.mitigations) ? currentAssetAnalysis.mitigations : [];
+  const primaryCandidate = getTopCandidateTargets(currentAssetAnalysis, 1)[0] || currentAssetAnalysis?.predicted_next_target || null;
+  const contextualGuidance = primaryCandidate ? getCandidateMitigationGuidance(primaryCandidate) : [];
+
+  if (mitigations.length === 0 && contextualGuidance.length === 0) {
+    setAssetAnalysisFeedback("No mitigation recommendations to copy", "error");
+    return;
+  }
+
+  const contextualCopy = contextualGuidance.length > 0
+    ? `\nContext-aware guidance for ${formatAssetTypeLabel(primaryCandidate?.asset_type || "Unknown")}:\n${contextualGuidance.map((item, index) => `${index + 1}. ${item}`).join("\n")}`
+    : "";
+
+  const copyText = `${buildRecommendationsText(mitigations, currentAssetAnalysis?.asset_name || selectedAssetName)}${contextualCopy}`.trim();
+
+  try {
+    if (!navigator?.clipboard?.writeText) {
+      throw new Error("Clipboard API unavailable");
+    }
+
+    await navigator.clipboard.writeText(copyText);
+    setAssetAnalysisFeedback("Recommendations copied to clipboard", "success");
+  } catch (error) {
+    console.error(error);
+    setAssetAnalysisFeedback("Copy failed. Clipboard permissions may be blocked.", "error");
   }
 }
 
@@ -135,8 +1247,8 @@ function resetPredictionHighlight() {
     return;
   }
 
-  window.cloudguardCy.nodes().removeClass("predicted risk-predicted");
-  window.cloudguardCy.edges().removeClass("highlighted");
+  window.cloudguardCy.nodes().removeClass("predicted risk-predicted predicted-focus analysis-primary-target analysis-path-node analysis-source-node");
+  window.cloudguardCy.edges().removeClass("highlighted analysis-path-edge hover-highlighted-edge highlighted-edge");
 }
 
 async function loadRiskData() {
@@ -372,8 +1484,8 @@ function generateReasons(nodeId) {
 }
 
 function showNodeDetails(nodeData) {
-  const assetDetailsPanel = document.querySelector('[aria-label="Asset details panel"]');
-  if (!assetDetailsPanel) {
+  const detailsPanel = document.getElementById("graph-node-details");
+  if (!detailsPanel) {
     return;
   }
 
@@ -390,7 +1502,7 @@ function showNodeDetails(nodeData) {
     `
     : "";
 
-  assetDetailsPanel.innerHTML = `
+  detailsPanel.innerHTML = `
     <h3>Asset Details</h3>
     <p><strong>ID:</strong> ${assetId}</p>
     <p><strong>Label:</strong> ${assetLabel}</p>
@@ -470,61 +1582,16 @@ function deduplicatePredictions(predictions) {
 }
 
 function showNoPredictionsMessage() {
-  const container = document.getElementById("prediction-list");
-  if (!container) {
-    return;
-  }
-
-  container.innerHTML = `<div class="prediction-empty">No predictions available</div>`;
+  renderAssetPredictionPanel({ predicted_next_target: null });
 }
 
 function focusRiskNode(assetName) {
-  const cy = window.cloudguardCy;
-  if (!cy || !assetName) {
-    return;
-  }
-
-  const targetNode = cy.nodes().filter((node) => {
-    const label = String(node.data("label") || node.data("id") || "").trim();
-    return label === assetName;
-  }).first();
-
-  if (!targetNode || targetNode.empty()) {
-    return;
-  }
-
-  cy.elements().unselect();
-  targetNode.select();
-  cy.center(targetNode);
-  cy.animate(
-    {
-      fit: {
-        eles: targetNode,
-        padding: 60
-      }
-    },
-    {
-      duration: 350
-    }
-  );
-
-  showNodeDetails({
-    id: targetNode.data("id") || assetName,
-    label: targetNode.data("label") || assetName,
-    type: targetNode.data("type") || "Unknown"
-  });
+  focusAndHighlightNodeByAssetName(assetName, true);
 }
 
 function renderPredictions(predictions) {
-  const container = document.getElementById("prediction-list");
-  if (!container) {
-    return;
-  }
-
-  container.innerHTML = "";
-
   if (!Array.isArray(predictions) || predictions.length === 0) {
-    container.innerHTML = `<div class="prediction-empty">No predictions available</div>`;
+    showNoPredictionsMessage();
     return;
   }
 
@@ -534,36 +1601,22 @@ function renderPredictions(predictions) {
     return rightProbability - leftProbability;
   });
 
-  sortedPredictions.forEach((prediction) => {
-    const probability = Number(prediction?.probability || 0);
-    const safeProbability = Number.isFinite(probability) ? Math.max(0, Math.min(1, probability)) : 0;
-    const nodeName = String(prediction?.node || prediction?.id || prediction?.target || "Unknown node");
-    const reasons = getPredictionReasons(prediction).length > 0 ? getPredictionReasons(prediction) : generateReasons(nodeName);
-    const label = normalizePredictionLabel(prediction);
-    const item = document.createElement("button");
-    item.type = "button";
-    item.classList.add("prediction-item");
-    item.innerHTML = `
-      <div class="prediction-item-row">
-        <span class="prediction-dot predicted"></span>
-        <strong>${nodeName}</strong>
-        <span class="badge ${getPredictionBadgeClass(label)}">${label}</span>
-      </div>
-      <div class="prediction-confidence">Confidence: ${(safeProbability * 100).toFixed(1)}%</div>
-      <div class="prediction-bar-track">
-        <div class="prediction-bar-fill" style="width: ${safeProbability * 100}%"></div>
-      </div>
-      <div class="prediction-reason">${reasons.map((reason) => `• ${reason}`).join("<br />")}</div>
-    `;
+  const bestPrediction = sortedPredictions[0] || {};
+  const predictedTarget = String(bestPrediction?.node || bestPrediction?.id || bestPrediction?.target || "Unknown node");
+  const reasons = getPredictionReasons(bestPrediction).length > 0
+    ? getPredictionReasons(bestPrediction)
+    : generateReasons(predictedTarget);
 
-    item.addEventListener("click", () => {
-      const targetNode = String(prediction?.node || prediction?.id || "");
-      focusNode(targetNode);
-      highlightConnectedEdges(targetNode);
-    });
-
-    container.appendChild(item);
+  renderAssetPredictionPanel({
+    predicted_next_target: {
+      asset_name: predictedTarget,
+      reason: reasons.join("; "),
+      confidence: Number(bestPrediction?.probability || 0),
+      impact_hint: null
+    }
   });
+
+  focusAndHighlightNodeByAssetName(predictedTarget, false);
 }
 
 function applyPredictionHighlight(predictions) {
@@ -881,6 +1934,63 @@ function renderGraph(graphData) {
         }
       },
       {
+        selector: ".predicted-focus",
+        style: {
+          "border-width": 7,
+          "border-color": "#ffd166",
+          "overlay-color": "#ffd166",
+          "overlay-opacity": 0.2,
+          "shadow-blur": 28,
+          "shadow-color": "#ffd166",
+          "shadow-opacity": 0.55
+        }
+      },
+      {
+        selector: ".analysis-primary-target",
+        style: {
+          "background-color": "#ff9f1a",
+          "border-width": 8,
+          "border-color": "#ffb347",
+          "overlay-color": "#ff9f1a",
+          "overlay-opacity": 0.22,
+          "shadow-blur": 34,
+          "shadow-color": "#ffb347",
+          "shadow-opacity": 0.72,
+          "background-opacity": 0.98,
+          "z-index": 13
+        }
+      },
+      {
+        selector: ".analysis-source-node",
+        style: {
+          "border-width": 5,
+          "border-color": "#8be9fd",
+          "overlay-color": "#8be9fd",
+          "overlay-opacity": 0.12,
+          "shadow-blur": 18,
+          "shadow-color": "#8be9fd",
+          "shadow-opacity": 0.45
+        }
+      },
+      {
+        selector: ".analysis-path-node",
+        style: {
+          "border-width": 4,
+          "border-color": "#f0b85f",
+          "overlay-color": "#f0b85f",
+          "overlay-opacity": 0.08
+        }
+      },
+      {
+        selector: ".analysis-path-edge",
+        style: {
+          width: 5.8,
+          "line-color": "#22c55e",
+          "target-arrow-color": "#22c55e",
+          opacity: 1
+        }
+      },
+      {
         selector: ".hover-highlighted-edge",
         style: {
           width: 4.5,
@@ -926,6 +2036,10 @@ function renderGraph(graphData) {
 
     if (riskMode && predictionMode && currentPredictions.length > 0) {
       applyCombinedHighlight(currentPredictions, getRiskHighlightedNodeIds());
+    }
+
+    if (currentAssetAnalysis) {
+      highlightPredictedTargetInGraph(currentAssetAnalysis);
     }
   });
 
@@ -1050,27 +2164,6 @@ async function fetchAttackPath() {
     riskMode = false;
     console.log("Attack Path:", data);
 
-    const mitigations = Array.isArray(data.mitigations) ? data.mitigations : [];
-    const mitigationPanel = document.querySelector('[aria-label="Mitigation suggestions panel"]');
-
-    if (mitigationPanel) {
-      if (mitigations.length === 0) {
-        mitigationPanel.innerHTML = `
-          <h3>Mitigation Suggestions</h3>
-          <p>No mitigation suggestions available</p>
-        `;
-      } else {
-        const mitigationItems = mitigations
-          .map((item) => `<li>${item}</li>`)
-          .join("");
-
-        mitigationPanel.innerHTML = `
-          <h3>Mitigation Suggestions</h3>
-          <ul>${mitigationItems}</ul>
-        `;
-      }
-    }
-
     renderGraph(currentGraphData);
 
     updateStatus("Attack path loaded successfully", "success");
@@ -1109,32 +2202,19 @@ async function fetchAllPaths() {
 }
 
 async function fetchRiskScore() {
-  updateStatus("Loading risk score...", "loading");
-  const riskDashboardPanel = document.querySelector('[aria-label="Risk dashboard panel"]');
+  cachedRiskAssets = null;
+  await refreshRelatedHighRiskAssets({ silent: false });
+}
+
+async function refreshRelatedHighRiskAssets(options = {}) {
+  const { silent = false } = options;
+
+  if (!silent) {
+    updateStatus("Loading risk score...", "loading");
+  }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/risk-score`, {
-      method: "GET"
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    console.log("Risk score response:", data);
-
-    const topAssets = Array.isArray(data?.risk?.top_assets) ? data.risk.top_assets : [];
-    const normalizedAssets = normalizeRiskAssets(topAssets);
-    const validRiskValues = normalizedAssets
-      .map((asset) => asset.risk_score)
-      .filter((risk) => Number.isFinite(risk));
-
-    const avgRisk = validRiskValues.length === 0
-      ? null
-      : validRiskValues.reduce((sum, risk) => sum + risk, 0) / validRiskValues.length;
-    const overallRiskValue = formatRiskValue(avgRisk);
-    const overallRiskLevel = getRiskLevel(avgRisk);
+    const normalizedAssets = await loadRiskData();
 
     window.latestRiskAssets = normalizedAssets;
     cachedRiskAssets = normalizedAssets;
@@ -1155,55 +2235,17 @@ async function fetchRiskScore() {
       renderGraph(currentGraphData);
     }
 
-    if (riskDashboardPanel) {
-      riskDashboardPanel.innerHTML = "";
+    renderRelatedHighRiskAssets(normalizedAssets);
 
-      if (normalizedAssets.length === 0) {
-        riskDashboardPanel.innerHTML = `
-          <h2>Risk Dashboard</h2>
-          <p class="risk-overall">Overall Risk: ${overallRiskValue} <span class="badge ${getRiskBadgeClass(overallRiskLevel)}">${overallRiskLevel}</span></p>
-          <p class="risk-summary">${getRiskSummaryMessage(overallRiskLevel)}</p>
-          <p>No risk assets found</p>
-        `;
-      } else {
-        const assetItems = normalizedAssets
-          .map((asset) => {
-            return `
-              <article class="risk-card ${asset.risk_level.toLowerCase()}" data-asset-name="${asset.name}">
-                <div class="risk-title">${asset.name} <span class="badge ${getRiskBadgeClass(asset.risk_level)}">${asset.risk_level}</span></div>
-                <div class="risk-score">Risk Score: ${formatRiskValue(asset.risk_score)}</div>
-                <div class="risk-reason">Reason: ${asset.reason}</div>
-              </article>
-            `;
-          })
-          .join("");
-
-        riskDashboardPanel.innerHTML = `
-          <h2>Risk Dashboard</h2>
-          <p class="risk-overall">Overall Risk: ${overallRiskValue} <span class="badge ${getRiskBadgeClass(overallRiskLevel)}">${overallRiskLevel}</span></p>
-          <p class="risk-summary">${getRiskSummaryMessage(overallRiskLevel)}</p>
-          <div class="risk-grid">${assetItems}</div>
-        `;
-
-        riskDashboardPanel.querySelectorAll(".risk-card").forEach((card) => {
-          card.addEventListener("click", () => {
-            const assetName = card.getAttribute("data-asset-name");
-            focusRiskNode(assetName || "");
-          });
-        });
-      }
+    if (!silent) {
+      updateStatus("Risk score loaded", "success");
     }
-
-    updateStatus("Risk score loaded", "success");
   } catch (error) {
     console.error(error);
-    if (riskDashboardPanel) {
-      riskDashboardPanel.innerHTML = `
-        <h2>Risk Dashboard</h2>
-        <p>Failed to load risk data</p>
-      `;
+    renderRelatedHighRiskAssets([]);
+    if (!silent) {
+      updateStatus("Failed to load risk score", "error");
     }
-    updateStatus("Failed to load risk score", "error");
   }
 }
 
@@ -1325,4 +2367,29 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btnAllPaths")?.addEventListener("click", fetchAllPaths);
   document.getElementById("btnRiskScore")?.addEventListener("click", fetchRiskScore);
   document.getElementById("btnPredictCompromise")?.addEventListener("click", () => handlePrediction());
+
+  const assetForm = document.getElementById("asset-analysis-form");
+  const assetInput = document.getElementById("asset-selector-input");
+  const copyButton = document.getElementById("copy-recommendations-btn");
+
+  document.getElementById("btnAssetAnalysis")?.addEventListener("click", () => {
+    const requestedAsset = String(assetInput?.value || selectedAssetName || DEFAULT_ASSET_NAME).trim() || DEFAULT_ASSET_NAME;
+    fetchAssetAnalysis(requestedAsset);
+  });
+
+  assetForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const requestedAsset = String(assetInput?.value || "").trim() || DEFAULT_ASSET_NAME;
+    fetchAssetAnalysis(requestedAsset);
+  });
+
+  assetInput?.addEventListener("change", () => {
+    const requestedAsset = String(assetInput.value || "").trim() || DEFAULT_ASSET_NAME;
+    fetchAssetAnalysis(requestedAsset);
+  });
+
+  copyButton?.addEventListener("click", copyRecommendationsToClipboard);
+
+  fetchAssetAnalysis(DEFAULT_ASSET_NAME);
+  refreshRelatedHighRiskAssets({ silent: true });
 });
