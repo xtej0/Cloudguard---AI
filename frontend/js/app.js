@@ -7,6 +7,16 @@ const assetNameMap = {
   "Application Server": "Application Server VM",
   IAM: "IAM Role"
 };
+const ATTACK_SIMULATION_STEP_DELAY_MS = 950;
+const ATTACK_SIMULATION_PAUSE_POLL_MS = 120;
+const attackSimulationState = {
+  pathNodeIds: [],
+  pathEdgePairs: [],
+  running: false,
+  paused: false,
+  stepIndex: 0,
+  runToken: 0
+};
 let cachedRiskAssets = null;
 let riskMode = false;
 let predictionMode = false;
@@ -1038,12 +1048,122 @@ function renderAssetAnalysisDashboard(assetAnalysis) {
   renderAssetCandidatesPanel(assetAnalysis, candidateList);
   renderAttackPathNarrativePanel(assetAnalysis, primaryCandidate);
   renderAssetMitigationPanel(assetAnalysis, candidateList);
-
+  renderExplainabilityPanel(assetAnalysis, primaryCandidate);
   if (candidateList.length > 0) {
     syncAnalysisGraphHighlight(assetAnalysis, primaryCandidate);
   } else {
     resetPredictionHighlight();
   }
+
+  // Also apply static prediction highlight for quick visibility (non-simulation classes)
+  try {
+    const cy = window.cloudguardCy;
+    const sourceElem = findNodeByAssetName(getAssetAnalysisSourceName(assetAnalysis || {}));
+    let sourceId = sourceElem && !sourceElem.empty() ? String(sourceElem.id()) : null;
+    let targetId = null;
+
+    if (primaryCandidate) {
+      if (primaryCandidate.node) {
+        targetId = String(primaryCandidate.node);
+      } else if (primaryCandidate.asset_name) {
+        const targetElem = findNodeByAssetName(primaryCandidate.asset_name);
+        if (targetElem && !targetElem.empty()) targetId = String(targetElem.id());
+      }
+    }
+
+    if (sourceId && targetId) {
+      highlightPredictionPath(sourceId, targetId);
+    }
+  } catch (e) {
+    // fail gracefully
+  }
+}
+
+// Explainability helper: returns human-readable explanation string
+function getPredictionExplanation(data) {
+  if (!data) return "No explanation available";
+
+  // Minimal deterministic explanation per spec; real data could be inserted here.
+  return "High exposure combined with identity and network risks, along with a short attack path, increases the likelihood of compromise.";
+}
+
+function renderExplainabilityPanel(assetAnalysis, primaryCandidate) {
+  const container = document.getElementById("prediction-explainability-content");
+  const factorsContainer = document.getElementById("explainability-factors");
+  const textContainer = document.getElementById("explainability-text");
+
+  if (!container || !factorsContainer || !textContainer) return;
+
+  const prediction = primaryCandidate || assetAnalysis?.predicted_next_target || null;
+
+  const exposure = assetAnalysis?.exposure_score ?? assetAnalysis?.current_risk?.exposure_score ?? null;
+  const identity = assetAnalysis?.identity_risk_score ?? assetAnalysis?.current_risk?.identity_risk_score ?? null;
+  const network = assetAnalysis?.network_risk_score ?? assetAnalysis?.current_risk?.network_risk_score ?? null;
+  const pathLen = assetAnalysis?.shortest_path_length ?? assetAnalysis?.predicted_next_target?.path_length ?? null;
+
+  const factorLines = [];
+  factorLines.push(`<div><strong>exposure_score:</strong> ${exposure !== null ? escapeHtml(String(formatFloat(exposure, 2))) : "Data not available"}</div>`);
+  factorLines.push(`<div><strong>identity_risk_score:</strong> ${identity !== null ? escapeHtml(String(formatFloat(identity, 2))) : "Data not available"}</div>`);
+  factorLines.push(`<div><strong>network_risk_score:</strong> ${network !== null ? escapeHtml(String(formatFloat(network, 2))) : "Data not available"}</div>`);
+  factorLines.push(`<div><strong>shortest_path_length:</strong> ${pathLen !== null ? escapeHtml(String(pathLen)) : "Data not available"}</div>`);
+
+  factorsContainer.innerHTML = `<div class="explainability-list">${factorLines.join("")}</div>`;
+  textContainer.textContent = getPredictionExplanation(prediction || assetAnalysis) || "No explanation available";
+}
+
+// Highlight predicted static path (source node, target node, and connecting edge)
+function highlightPredictionPath(sourceId, targetId) {
+  const cy = window.cloudguardCy;
+  if (!cy) return;
+
+  cy.elements().removeClass("prediction-source prediction-target prediction-edge");
+
+  const sourceNode = sourceId ? cy.getElementById(String(sourceId)) : null;
+  const targetNode = targetId ? cy.getElementById(String(targetId)) : null;
+
+  let edge = null;
+  if (sourceNode && targetNode && !sourceNode.empty() && !targetNode.empty()) {
+    edge = cy.edges().filter(e => String(e.source().id()) === String(sourceNode.id()) && String(e.target().id()) === String(targetNode.id()));
+  }
+
+  if (sourceNode && !sourceNode.empty()) sourceNode.addClass("prediction-source");
+  if (targetNode && !targetNode.empty()) targetNode.addClass("prediction-target");
+  if (edge && edge.length > 0) edge.addClass("prediction-edge");
+}
+
+function downloadJSON(data) {
+  try {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "cloudguard-analysis.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("Export failed", err);
+    updateStatus("Export failed", "error");
+  }
+}
+
+function exportCurrentAnalysis() {
+  const currentAsset = selectedAssetName || null;
+  const riskData = currentAssetAnalysis?.current_risk || null;
+  const predictionData = currentAssetAnalysis?.predicted_next_target || (currentPredictions && currentPredictions.length > 0 ? currentPredictions[0] : null);
+  const nextTargets = Array.isArray(currentAssetAnalysis?.candidate_next_hops) ? currentAssetAnalysis.candidate_next_hops : (currentPredictions || []);
+  const mitigations = Array.isArray(currentAssetAnalysis?.mitigations) ? currentAssetAnalysis.mitigations : [];
+
+  const exportData = {
+    asset: currentAsset,
+    risk: riskData,
+    prediction: predictionData,
+    candidates: nextTargets,
+    mitigations: mitigations
+  };
+
+  downloadJSON(exportData);
 }
 
 async function fetchAssetAnalysis(assetName) {
@@ -1249,6 +1369,458 @@ function resetPredictionHighlight() {
 
   window.cloudguardCy.nodes().removeClass("predicted risk-predicted predicted-focus analysis-primary-target analysis-path-node analysis-source-node");
   window.cloudguardCy.edges().removeClass("highlighted analysis-path-edge hover-highlighted-edge highlighted-edge");
+}
+
+function getAttackSimulationNodeIds(attackPathData) {
+  const graphNodes = attackPathData?.graph?.nodes;
+  if (Array.isArray(graphNodes) && graphNodes.length > 0) {
+    return graphNodes
+      .map((node) => String(node?.data?.id || node?.data?.label || node?.data?.name || node?.id || "").trim())
+      .filter(Boolean);
+  }
+
+  const summaryPaths = attackPathData?.summary?.paths;
+  if (Array.isArray(summaryPaths) && summaryPaths.length > 0) {
+    const firstPath = summaryPaths[0];
+    if (Array.isArray(firstPath?.nodes)) {
+      return firstPath.nodes.map((node) => String(node || "").trim()).filter(Boolean);
+    }
+  }
+
+  return [];
+}
+
+function getAttackSimulationEdgePairs(attackPathData) {
+  const graphEdges = attackPathData?.graph?.edges;
+  if (Array.isArray(graphEdges) && graphEdges.length > 0) {
+    return graphEdges
+      .map((edge) => ({
+        source: String(edge?.data?.source || "").trim(),
+        target: String(edge?.data?.target || "").trim()
+      }))
+      .filter((edge) => edge.source && edge.target);
+  }
+
+  const nodeIds = getAttackSimulationNodeIds(attackPathData);
+  const edgePairs = [];
+  for (let index = 0; index < nodeIds.length - 1; index += 1) {
+    edgePairs.push({
+      source: nodeIds[index],
+      target: nodeIds[index + 1]
+    });
+  }
+
+  return edgePairs;
+}
+
+function getSimulationPanelElement(elementId) {
+  return document.getElementById(elementId);
+}
+
+function getSimulationNodeElement(nodeId) {
+  const cy = window.cloudguardCy;
+  if (!cy || !nodeId) {
+    return null;
+  }
+
+  const node = cy.getElementById(String(nodeId));
+  return node && !node.empty() ? node : null;
+}
+
+function getSimulationEdgeElement(sourceId, targetId) {
+  const cy = window.cloudguardCy;
+  if (!cy || !sourceId || !targetId) {
+    return null;
+  }
+
+  const edge = cy.edges().filter((candidate) => {
+    return String(candidate.source().id()) === String(sourceId) && String(candidate.target().id()) === String(targetId);
+  });
+
+  return edge && edge.length > 0 ? edge[0] : null;
+}
+
+function clearSimulationHighlightClasses() {
+  const cy = window.cloudguardCy;
+  if (!cy) {
+    return;
+  }
+
+  cy.batch(() => {
+    cy.nodes().removeClass("sim-visited sim-active");
+    cy.edges().removeClass("sim-visited-edge sim-active-edge");
+  });
+}
+
+function getAttackSimulationRiskSummary(node) {
+  const nodeLabel = normalize(getGraphNodeLabel(node));
+  const nodeId = normalize(getGraphPathNodeId(node));
+  const summaryMap = window.latestRiskSummary?.assetRiskByName || {};
+  const summaryEntries = Object.entries(summaryMap);
+
+  for (const [assetName, summary] of summaryEntries) {
+    const normalizedAssetName = normalize(assetName);
+    if (normalizedAssetName && (normalizedAssetName === nodeLabel || normalizedAssetName === nodeId)) {
+      return summary;
+    }
+  }
+
+  const normalizedAssets = Array.isArray(window.latestRiskAssets) ? window.latestRiskAssets : [];
+  return normalizedAssets.find((asset) => {
+    const assetName = normalize(asset?.name || asset?.asset_name || asset?.asset || "");
+    const assetId = normalize(asset?.id || "");
+    return assetName === nodeLabel || assetName === nodeId || assetId === nodeId;
+  }) || null;
+}
+
+function getAttackSimulationProbability(node) {
+  const nodeLabel = normalize(getGraphNodeLabel(node));
+  const nodeId = normalize(getGraphPathNodeId(node));
+  const predictions = normalizePredictionTargets(window.latestAttackPathData?.prediction?.next_targets || []);
+
+  let bestPrediction = null;
+  predictions.forEach((prediction) => {
+    const candidateId = normalize(prediction?.node || prediction?.id || prediction?.asset_name || prediction?.name || prediction?.label || "");
+    if (candidateId !== nodeId && candidateId !== nodeLabel) {
+      return;
+    }
+
+    if (!bestPrediction || Number(prediction?.probability || 0) > Number(bestPrediction?.probability || 0)) {
+      bestPrediction = prediction;
+    }
+  });
+
+  if (bestPrediction) {
+    return Number(bestPrediction?.probability);
+  }
+
+  return Number.NaN;
+}
+
+function formatAttackSimulationProbability(probability) {
+  const numericProbability = Number(probability);
+  if (!Number.isFinite(numericProbability)) {
+    return "-";
+  }
+
+  const percentage = numericProbability > 1 ? numericProbability : numericProbability * 100;
+  return `${percentage.toFixed(1)}%`;
+}
+
+function getAttackStepDescription(nodeLabel) {
+  const label = String(nodeLabel || "").toLowerCase();
+
+  if (label.includes("internet")) {
+    return "Attacker begins from external network";
+  }
+
+  if (label.includes("web")) {
+    return "Exploiting publicly exposed service";
+  }
+
+  if (label.includes("application")) {
+    return "Lateral movement inside network";
+  }
+
+  if (label.includes("database")) {
+    return "Accessing sensitive data";
+  }
+
+  return "Advancing through attack path";
+}
+
+function updateAttackSimulationControls() {
+  const simulateButton = getSimulationPanelElement("simulate-attack-button");
+  const pauseButton = getSimulationPanelElement("pause-simulation-button");
+  const resumeButton = getSimulationPanelElement("resume-simulation-button");
+  const resetButton = getSimulationPanelElement("reset-simulation-button");
+  const hasLoadedPath = attackSimulationState.pathNodeIds.length > 0;
+
+  if (simulateButton) {
+    simulateButton.disabled = !hasLoadedPath || attackSimulationState.running;
+  }
+
+  if (pauseButton) {
+    pauseButton.disabled = !attackSimulationState.running || attackSimulationState.paused;
+  }
+
+  if (resumeButton) {
+    resumeButton.disabled = !attackSimulationState.running || !attackSimulationState.paused;
+  }
+
+  if (resetButton) {
+    resetButton.disabled = !hasLoadedPath && !attackSimulationState.running && attackSimulationState.stepIndex === 0;
+  }
+}
+
+function updateAttackSimulationPanel() {
+  const stateLabel = getSimulationPanelElement("attack-simulation-state");
+  const stepLabel = getSimulationPanelElement("attack-simulation-step");
+  const assetLabel = getSimulationPanelElement("attack-simulation-asset");
+  const actionLabel = getSimulationPanelElement("attack-simulation-action");
+  const riskLabel = getSimulationPanelElement("attack-simulation-risk");
+  const probabilityLabel = getSimulationPanelElement("attack-simulation-probability");
+  const summaryLabel = getSimulationPanelElement("attack-simulation-summary");
+  const totalSteps = attackSimulationState.pathNodeIds.length;
+  const hasLoadedPath = totalSteps > 0;
+  const safeStepIndex = totalSteps > 0 ? Math.min(attackSimulationState.stepIndex, totalSteps - 1) : 0;
+  const currentNodeId = hasLoadedPath ? attackSimulationState.pathNodeIds[safeStepIndex] : null;
+  const currentNode = currentNodeId ? getSimulationNodeElement(currentNodeId) : null;
+  const nodeData = currentNode && !currentNode.empty() ? currentNode.data() : null;
+  const riskSummary = currentNode ? getAttackSimulationRiskSummary(currentNode) : null;
+  const riskScore = Number.isFinite(Number(riskSummary?.risk_score ?? riskSummary?.risk))
+    ? (riskSummary?.risk_score ?? riskSummary?.risk)
+    : Number.isFinite(Number(nodeData?.risk_score))
+      ? nodeData?.risk_score
+      : null;
+  const nodeLabel = currentNode ? getGraphNodeLabel(currentNode) || getGraphPathNodeId(currentNode) || "Unknown" : hasLoadedPath ? "Unknown" : "No attack path loaded";
+  const probability = currentNode ? getAttackSimulationProbability(currentNode) : Number.NaN;
+
+  let statusText = "No attack path loaded";
+  if (attackSimulationState.running) {
+    statusText = attackSimulationState.paused ? "Paused" : "Running";
+  } else if (hasLoadedPath) {
+    statusText = attackSimulationState.stepIndex >= totalSteps ? "Completed" : "Ready";
+  }
+
+  if (stateLabel) {
+    stateLabel.textContent = statusText;
+  }
+
+  if (stepLabel) {
+    stepLabel.textContent = hasLoadedPath ? `${safeStepIndex + 1} / ${totalSteps}` : "0 / 0";
+  }
+
+  if (assetLabel) {
+    assetLabel.textContent = nodeLabel;
+  }
+
+  if (actionLabel) {
+    actionLabel.textContent = currentNode ? getAttackStepDescription(nodeLabel) : "-";
+  }
+
+  if (riskLabel) {
+    riskLabel.textContent = riskScore === null ? "Entry Point" : formatRiskValue(riskScore);
+  }
+
+  if (probabilityLabel) {
+    probabilityLabel.textContent = formatAttackSimulationProbability(probability);
+  }
+
+  if (summaryLabel) {
+    if (!hasLoadedPath) {
+      summaryLabel.textContent = "Load an attack path to simulate each hop.";
+    } else if (attackSimulationState.running && attackSimulationState.paused) {
+      summaryLabel.textContent = "Simulation paused at the current step.";
+    } else if (attackSimulationState.running) {
+      summaryLabel.textContent = "Simulation is traversing the attack path.";
+    } else if (attackSimulationState.stepIndex >= totalSteps && totalSteps > 0) {
+      summaryLabel.textContent = "Simulation finished. Use Reset Simulation to clear highlights.";
+    } else {
+      summaryLabel.textContent = "Attack path ready for simulation.";
+    }
+  }
+
+  updateAttackSimulationControls();
+}
+
+function setLoadedAttackPathSimulation(pathData) {
+  attackSimulationState.pathNodeIds = getAttackSimulationNodeIds(pathData);
+  attackSimulationState.pathEdgePairs = getAttackSimulationEdgePairs(pathData);
+  attackSimulationState.stepIndex = 0;
+  attackSimulationState.running = false;
+  attackSimulationState.paused = false;
+  attackSimulationState.runToken += 1;
+  updateAttackSimulationPanel();
+}
+
+function clearLoadedAttackPathSimulation() {
+  clearSimulationHighlightClasses();
+  attackSimulationState.pathNodeIds = [];
+  attackSimulationState.pathEdgePairs = [];
+  attackSimulationState.stepIndex = 0;
+  attackSimulationState.running = false;
+  attackSimulationState.paused = false;
+  attackSimulationState.runToken += 1;
+  updateAttackSimulationPanel();
+}
+
+function resetSimulationState() {
+  attackSimulationState.running = false;
+  attackSimulationState.paused = false;
+  attackSimulationState.stepIndex = 0;
+  attackSimulationState.runToken += 1;
+  clearSimulationHighlightClasses();
+  updateAttackSimulationPanel();
+}
+
+function pauseSimulation() {
+  if (!attackSimulationState.running || attackSimulationState.paused) {
+    return;
+  }
+
+  attackSimulationState.paused = true;
+  updateAttackSimulationPanel();
+}
+
+function resumeSimulation() {
+  if (!attackSimulationState.running || !attackSimulationState.paused) {
+    return;
+  }
+
+  attackSimulationState.paused = false;
+  updateAttackSimulationPanel();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForSimulationDelay(runToken, delayMs) {
+  let remaining = Math.max(0, Number(delayMs) || 0);
+
+  while (remaining > 0) {
+    if (attackSimulationState.runToken !== runToken || !attackSimulationState.running) {
+      return false;
+    }
+
+    if (attackSimulationState.paused) {
+      await sleep(ATTACK_SIMULATION_PAUSE_POLL_MS);
+      continue;
+    }
+
+    const slice = Math.min(ATTACK_SIMULATION_PAUSE_POLL_MS, remaining);
+    await sleep(slice);
+    remaining -= slice;
+  }
+
+  return attackSimulationState.runToken === runToken && attackSimulationState.running;
+}
+
+function applySimulationStep(stepIndex) {
+  const cy = window.cloudguardCy;
+  const nodeIds = attackSimulationState.pathNodeIds;
+  const edgePairs = attackSimulationState.pathEdgePairs;
+
+  if (!cy || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+    return null;
+  }
+
+  const safeIndex = Math.max(0, Math.min(stepIndex, nodeIds.length - 1));
+  const currentNodeId = nodeIds[safeIndex];
+  const currentNode = getSimulationNodeElement(currentNodeId);
+
+  if (!currentNode) {
+    return null;
+  }
+
+  cy.batch(() => {
+    nodeIds.forEach((nodeId, index) => {
+      const node = getSimulationNodeElement(nodeId);
+      if (!node) {
+        return;
+      }
+
+      node.removeClass("sim-visited sim-active");
+      if (index < safeIndex) {
+        node.addClass("sim-visited");
+      } else if (index === safeIndex) {
+        node.addClass("sim-active");
+      }
+    });
+
+    edgePairs.forEach((edgePair, index) => {
+      const edge = getSimulationEdgeElement(edgePair.source, edgePair.target);
+      if (!edge) {
+        return;
+      }
+
+      edge.removeClass("sim-visited-edge sim-active-edge");
+      if (index < safeIndex) {
+        edge.addClass("sim-visited-edge");
+      } else if (index === safeIndex && safeIndex < edgePairs.length) {
+        edge.addClass("sim-active-edge");
+      }
+    });
+  });
+
+  cy.animate(
+    {
+      center: { eles: currentNode }
+    },
+    {
+      duration: 240
+    }
+  );
+
+  showNodeDetails(currentNode.data());
+  attackSimulationState.stepIndex = safeIndex;
+  updateAttackSimulationPanel();
+  return currentNode;
+}
+
+async function startSimulation() {
+  if (attackSimulationState.running) {
+    return;
+  }
+
+  if (attackSimulationState.pathNodeIds.length === 0) {
+    updateAttackSimulationPanel();
+    return;
+  }
+
+  clearSimulationHighlightClasses();
+  attackSimulationState.running = true;
+  attackSimulationState.paused = false;
+  attackSimulationState.stepIndex = 0;
+  attackSimulationState.runToken += 1;
+  const runToken = attackSimulationState.runToken;
+
+  updateAttackSimulationPanel();
+
+  const totalSteps = attackSimulationState.pathNodeIds.length;
+
+  for (let stepIndex = 0; stepIndex < totalSteps; stepIndex += 1) {
+    if (attackSimulationState.runToken !== runToken || !attackSimulationState.running) {
+      return;
+    }
+
+    while (attackSimulationState.paused) {
+      if (attackSimulationState.runToken !== runToken || !attackSimulationState.running) {
+        return;
+      }
+
+      await sleep(ATTACK_SIMULATION_PAUSE_POLL_MS);
+    }
+
+    const currentNode = applySimulationStep(stepIndex);
+    if (!currentNode) {
+      break;
+    }
+
+    attackSimulationState.stepIndex = stepIndex;
+    updateAttackSimulationPanel();
+
+    if (stepIndex < totalSteps - 1) {
+      const shouldContinue = await waitForSimulationDelay(runToken, ATTACK_SIMULATION_STEP_DELAY_MS);
+      if (!shouldContinue) {
+        return;
+      }
+    }
+  }
+
+  if (attackSimulationState.runToken !== runToken) {
+    return;
+  }
+
+  attackSimulationState.running = false;
+  attackSimulationState.paused = false;
+  attackSimulationState.stepIndex = totalSteps;
+  updateAttackSimulationPanel();
+}
+
+function resetSimulation() {
+  resetSimulationState();
 }
 
 async function loadRiskData() {
@@ -1617,6 +2189,19 @@ function renderPredictions(predictions) {
   });
 
   focusAndHighlightNodeByAssetName(predictedTarget, false);
+  try {
+    const sourceElem = findNodeByAssetName(getAssetAnalysisSourceName(currentAssetAnalysis || {}));
+    const sourceId = sourceElem && !sourceElem.empty() ? String(sourceElem.id()) : null;
+    let targetId = bestPrediction?.node ? String(bestPrediction.node) : null;
+    if (!targetId) {
+      const targetElem = findNodeByAssetName(predictedTarget);
+      if (targetElem && !targetElem.empty()) targetId = String(targetElem.id());
+    }
+
+    if (sourceId && targetId) highlightPredictionPath(sourceId, targetId);
+  } catch (e) {
+    // ignore
+  }
 }
 
 function applyPredictionHighlight(predictions) {
@@ -1726,6 +2311,10 @@ function renderGraph(graphData) {
   if (!graphContainer) {
     console.error("Graph container not found");
     return;
+  }
+
+  if (attackSimulationState.running || attackSimulationState.paused) {
+    resetSimulationState();
   }
 
   resetHighlight();
@@ -1991,6 +2580,41 @@ function renderGraph(graphData) {
         }
       },
       {
+        selector: ".prediction-source",
+        style: {
+          "border-width": 6,
+          "border-color": "#3b82f6",
+          "overlay-color": "#3b82f6",
+          "overlay-opacity": 0.18,
+          "shadow-blur": 26,
+          "shadow-color": "#60a5fa",
+          "shadow-opacity": 0.6
+        }
+      },
+      {
+        selector: ".prediction-target",
+        style: {
+          "border-width": 6,
+          "border-color": "#ff8c00",
+          "overlay-color": "#ff8c00",
+          "overlay-opacity": 0.22,
+          "shadow-blur": 28,
+          "shadow-color": "#ffb347",
+          "shadow-opacity": 0.7,
+          "background-opacity": 0.98,
+          "z-index": 15
+        }
+      },
+      {
+        selector: ".prediction-edge",
+        style: {
+          "width": 6,
+          "line-color": "#60a5fa",
+          "target-arrow-color": "#60a5fa",
+          opacity: 1
+        }
+      },
+      {
         selector: ".hover-highlighted-edge",
         style: {
           width: 4.5,
@@ -2004,6 +2628,52 @@ function renderGraph(graphData) {
         style: {
           "background-color": "#00ffcc",
           "border-color": "#a7f3d0"
+        }
+      },
+      {
+        selector: ".sim-visited",
+        style: {
+          opacity: 0.42,
+          "background-color": "#7c3aed",
+          "border-color": "#c4b5fd",
+          "border-width": 3,
+          "background-opacity": 0.8
+        }
+      },
+      {
+        selector: ".sim-active",
+        style: {
+          "background-color": "#ff6b1a",
+          "border-color": "#ffd166",
+          "border-width": 8,
+          "overlay-color": "#ff6b1a",
+          "overlay-opacity": 0.22,
+          "shadow-blur": 30,
+          "shadow-color": "#ffd166",
+          "shadow-opacity": 0.75,
+          opacity: 1,
+          "z-index": 14
+        }
+      },
+      {
+        selector: ".sim-visited-edge",
+        style: {
+          width: 4,
+          opacity: 0.48,
+          "line-color": "#7c8aa3",
+          "target-arrow-color": "#7c8aa3"
+        }
+      },
+      {
+        selector: ".sim-active-edge",
+        style: {
+          width: 6,
+          opacity: 1,
+          "line-color": "#ffb347",
+          "target-arrow-color": "#ffb347",
+          "shadow-blur": 10,
+          "shadow-color": "#ffb347",
+          "shadow-opacity": 0.65
         }
       }
     ],
@@ -2041,6 +2711,8 @@ function renderGraph(graphData) {
     if (currentAssetAnalysis) {
       highlightPredictedTargetInGraph(currentAssetAnalysis);
     }
+
+    updateAttackSimulationPanel();
   });
 
 
@@ -2166,6 +2838,8 @@ async function fetchAttackPath() {
 
     renderGraph(currentGraphData);
 
+    setLoadedAttackPathSimulation(data);
+
     updateStatus("Attack path loaded successfully", "success");
   } catch (error) {
     console.error(error);
@@ -2190,6 +2864,7 @@ async function fetchAllPaths() {
     window.latestAllPathsData = data;
     currentGraphData = data.graph;
     riskMode = false;
+    clearLoadedAttackPathSimulation();
     console.log("All Paths:", data);
 
     renderGraph(currentGraphData);
@@ -2308,6 +2983,15 @@ async function handlePrediction(inputData = {}) {
     renderPredictions(predictions);
     applyPredictionHighlight(predictions);
 
+    // Render explainability panel using available asset analysis and best prediction
+    try {
+      const sorted = [...predictions].sort((a, b) => Number(b?.probability || 0) - Number(a?.probability || 0));
+      const best = sorted[0] || null;
+      renderExplainabilityPanel(currentAssetAnalysis, best);
+    } catch (e) {
+      // ignore
+    }
+
     if (riskMode) {
       applyCombinedHighlight(predictions, getRiskHighlightedNodeIds());
     }
@@ -2360,6 +3044,10 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("zoom-out")?.addEventListener("click", zoomOut);
   document.getElementById("fit-graph")?.addEventListener("click", fitGraph);
   document.getElementById("reset-graph")?.addEventListener("click", resetGraph);
+  document.getElementById("simulate-attack-button")?.addEventListener("click", startSimulation);
+  document.getElementById("pause-simulation-button")?.addEventListener("click", pauseSimulation);
+  document.getElementById("resume-simulation-button")?.addEventListener("click", resumeSimulation);
+  document.getElementById("reset-simulation-button")?.addEventListener("click", resetSimulation);
 
   updateStatus(`Frontend ready. API base URL: ${API_BASE_URL}`);
 
@@ -2389,6 +3077,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   copyButton?.addEventListener("click", copyRecommendationsToClipboard);
+  document.getElementById("export-analysis-btn")?.addEventListener("click", exportCurrentAnalysis);
+
+  updateAttackSimulationPanel();
 
   fetchAssetAnalysis(DEFAULT_ASSET_NAME);
   refreshRelatedHighRiskAssets({ silent: true });

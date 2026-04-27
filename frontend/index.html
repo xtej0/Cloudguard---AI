@@ -100,7 +100,54 @@
             <button type="button" id="zoom-out">−</button>
             <button type="button" id="fit-graph">Fit</button>
             <button type="button" id="reset-graph">Reset</button>
+            <button type="button" id="simulate-attack-button" disabled>Simulate Attack</button>
+            <button type="button" id="export-analysis-btn">Export Analysis</button>
           </div>
+
+          <div id="attack-simulation-panel" class="attack-simulation-panel" aria-label="Attack simulation status" aria-live="polite">
+            <div class="attack-simulation-panel-header">
+              <div>
+                <div class="attack-simulation-kicker">Attack Simulation</div>
+                <div id="attack-simulation-state" class="attack-simulation-state">No attack path loaded</div>
+              </div>
+              <div class="attack-simulation-step-count">
+                Step <span id="attack-simulation-step">0 / 0</span>
+              </div>
+            </div>
+
+            <div class="attack-simulation-metrics">
+              <div class="attack-simulation-metric">
+                <span class="attack-simulation-label">Asset</span>
+                <span id="attack-simulation-asset" class="attack-simulation-value">No attack path loaded</span>
+                <span class="attack-simulation-label">Attack Action</span>
+                <span id="attack-simulation-action" class="attack-simulation-value">-</span>
+              </div>
+              <div class="attack-simulation-metric">
+                <span class="attack-simulation-label">Risk Score</span>
+                <span id="attack-simulation-risk" class="attack-simulation-value">Entry Point</span>
+              </div>
+              <div class="attack-simulation-metric">
+                <span class="attack-simulation-label">Compromise Probability</span>
+                <span id="attack-simulation-probability" class="attack-simulation-value">-</span>
+              </div>
+            </div>
+
+            <p id="attack-simulation-summary" class="attack-simulation-summary">Load an attack path to simulate each hop.</p>
+
+            <div class="attack-simulation-actions">
+              <button type="button" id="pause-simulation-button" disabled>Pause</button>
+              <button type="button" id="resume-simulation-button" disabled>Resume</button>
+              <button type="button" id="reset-simulation-button" disabled>Reset Simulation</button>
+            </div>
+          </div>
+
+          <section class="intelligence-panel" id="prediction-explainability-panel" aria-label="Prediction Explainability">
+            <h3>Prediction Explainability</h3>
+            <div id="prediction-explainability-content" class="panel-content">
+              <div id="explainability-factors" class="empty-state">Data not available</div>
+              <div id="explainability-text" class="card-text">No explanation available</div>
+            </div>
+          </section>
 
           <div id="legend" class="graph-legend" aria-label="Graph legend">
             <div><span class="risk"></span> High Risk</div>

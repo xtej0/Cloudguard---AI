@@ -784,6 +784,13 @@ body {
   margin-bottom: 10px;
 }
 
+.graph-controls button:disabled,
+.attack-simulation-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+}
+
 .graph-controls button {
   border: 1px solid #2f3b4e;
   background: #182130;
@@ -836,6 +843,137 @@ body {
   box-shadow: 0 0 10px rgba(255, 140, 0, 0.45);
 }
 
+/* Prediction highlight styles (static, non-simulation) */
+.prediction-source {
+  border-width: 6px !important;
+  border-color: #3b82f6 !important;
+  overlay-color: #3b82f6 !important;
+  overlay-opacity: 0.18 !important;
+  shadow-blur: 26 !important;
+  shadow-color: #60a5fa !important;
+  shadow-opacity: 0.6 !important;
+}
+
+.prediction-target {
+  border-width: 6px !important;
+  border-color: #ff8c00 !important;
+  overlay-color: #ff8c00 !important;
+  overlay-opacity: 0.22 !important;
+  shadow-blur: 28 !important;
+  shadow-color: #ffb347 !important;
+  shadow-opacity: 0.7 !important;
+  background-opacity: 0.98 !important;
+  z-index: 15 !important;
+}
+
+.prediction-edge {
+  width: 6 !important;
+  line-color: #60a5fa !important;
+  target-arrow-color: #60a5fa !important;
+  opacity: 1 !important;
+}
+
+.attack-simulation-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid #2f3b4e;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(17, 24, 36, 0.94) 0%, rgba(12, 18, 29, 0.92) 100%);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18);
+}
+
+.attack-simulation-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.attack-simulation-kicker {
+  color: #9ef3e4;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.attack-simulation-state {
+  margin-top: 2px;
+  color: #eaf3ff;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.attack-simulation-step-count {
+  color: #9dafc3;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.attack-simulation-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.attack-simulation-metric {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid #2f3b4e;
+  border-radius: 10px;
+  background: rgba(20, 27, 39, 0.72);
+}
+
+.attack-simulation-label {
+  color: #9dafc3;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.attack-simulation-value {
+  color: #f3f8ff;
+  font-size: 0.96rem;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.attack-simulation-summary {
+  margin: 0;
+  color: #9dafc3;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.attack-simulation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attack-simulation-actions button {
+  border: 1px solid #2f3b4e;
+  background: #182130;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.attack-simulation-actions button:hover {
+  transform: translateY(-1px);
+  border-color: #35d0ba;
+  background: #1c2636;
+}
+
 .risk-card-desc,
 .risk-asset-card,
 .risk-card-header,
@@ -881,6 +1019,10 @@ body {
   width: 100%;
 }
 
+.graph-card h2 {
+  margin-bottom: 12px;
+}
+
 .graph-node-details {
   margin-top: 10px;
   border: 1px solid #2f3b4e;
@@ -902,6 +1044,12 @@ body {
 
 .graph-node-details p {
   margin: 4px 0;
+}
+
+@media (max-width: 1080px) {
+  .attack-simulation-metrics {
+    grid-template-columns: 1fr;
+  }
 }
 
 #cy {
