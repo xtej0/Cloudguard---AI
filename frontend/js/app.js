@@ -7,6 +7,23 @@ const assetNameMap = {
   "Application Server": "Application Server VM",
   IAM: "IAM Role"
 };
+const scenarioPresets = {
+  "internet-to-database": {
+    assetName: "Database Server",
+    graphMode: "attack-path",
+    status: "Preset loaded: Internet to Database attack path"
+  },
+  "web-server-focus": {
+    assetName: "Web Server VM",
+    graphMode: "attack-path",
+    status: "Preset loaded: Web Server exposure review"
+  },
+  "iam-review": {
+    assetName: "IAM Role",
+    graphMode: "risk-score",
+    status: "Preset loaded: IAM risk review"
+  }
+};
 const ATTACK_SIMULATION_STEP_DELAY_MS = 950;
 const ATTACK_SIMULATION_PAUSE_POLL_MS = 120;
 const attackSimulationState = {
@@ -957,6 +974,72 @@ function focusAndHighlightNodeByAssetName(assetName, animate = false) {
 
   highlightConnectedEdges(node.id());
   showNodeDetails(node.data());
+  return true;
+}
+
+function clearGraphSearchHighlight() {
+  const cy = window.cloudguardCy;
+  if (!cy) {
+    return;
+  }
+
+  cy.batch(() => {
+    cy.elements().removeClass("graph-search-dimmed graph-search-match graph-search-edge");
+  });
+}
+
+function searchGraphAsset(assetName, options = {}) {
+  const cy = window.cloudguardCy;
+  const query = String(assetName || "").trim();
+  const { focus = true, announce = true } = options;
+
+  clearGraphSearchHighlight();
+
+  if (!cy || !query) {
+    return false;
+  }
+
+  const normalizedQuery = normalize(query);
+  const matches = cy.nodes().filter((node) => {
+    const label = normalize(node.data("label") || node.data("id") || node.id());
+    return label.includes(normalizedQuery);
+  });
+
+  if (!matches || matches.empty()) {
+    if (announce) {
+      updateStatus(`No graph asset found for "${query}"`, "error");
+    }
+    return false;
+  }
+
+  const connectedEdges = matches.connectedEdges();
+  cy.batch(() => {
+    cy.elements().addClass("graph-search-dimmed");
+    matches.removeClass("graph-search-dimmed").addClass("graph-search-match");
+    connectedEdges.removeClass("graph-search-dimmed").addClass("graph-search-edge");
+    connectedEdges.connectedNodes().removeClass("graph-search-dimmed");
+  });
+
+  if (focus) {
+    cy.animate(
+      {
+        fit: {
+          eles: matches.union(connectedEdges),
+          padding: 80
+        }
+      },
+      { duration: 320 }
+    );
+  }
+
+  const primaryMatch = matches.first();
+  if (primaryMatch && !primaryMatch.empty()) {
+    showNodeDetails(primaryMatch.data());
+  }
+
+  if (announce) {
+    updateStatus(`Focused ${matches.length} matching asset${matches.length === 1 ? "" : "s"}`, "success");
+  }
   return true;
 }
 
@@ -2461,6 +2544,36 @@ function renderGraph(graphData) {
         }
       },
       {
+        selector: ".graph-search-dimmed",
+        style: {
+          opacity: 0.14
+        }
+      },
+      {
+        selector: ".graph-search-match",
+        style: {
+          "background-color": "#22d3ee",
+          "border-color": "#a5f3fc",
+          "border-width": 7,
+          "overlay-color": "#22d3ee",
+          "overlay-opacity": 0.18,
+          "shadow-blur": 24,
+          "shadow-color": "#67e8f9",
+          "shadow-opacity": 0.62,
+          opacity: 1,
+          "z-index": 16
+        }
+      },
+      {
+        selector: ".graph-search-edge",
+        style: {
+          width: 5.5,
+          "line-color": "#22d3ee",
+          "target-arrow-color": "#22d3ee",
+          opacity: 1
+        }
+      },
+      {
         selector: ".selected",
         style: {
           "background-color": "#facc15",
@@ -2710,6 +2823,12 @@ function renderGraph(graphData) {
 
     if (currentAssetAnalysis) {
       highlightPredictedTargetInGraph(currentAssetAnalysis);
+    }
+
+    const graphSearchInput = document.getElementById("graph-search-input");
+    const graphSearchValue = String(graphSearchInput?.value || "").trim();
+    if (graphSearchValue) {
+      searchGraphAsset(graphSearchValue, { focus: false, announce: false });
     }
 
     updateAttackSimulationPanel();
@@ -3033,8 +3152,44 @@ function fitGraph() {
 function resetGraph() {
   const cy = window.cloudguardCy;
   if (!cy) return;
+  clearGraphSearchHighlight();
   cy.zoom(1);
   cy.center();
+}
+
+async function applyScenarioPreset(presetId) {
+  const preset = scenarioPresets[presetId];
+  if (!preset) {
+    updateStatus("Unknown scenario preset", "error");
+    return;
+  }
+
+  const assetName = normalizeAssetName(preset.assetName);
+  selectedAssetName = assetName;
+
+  const assetInput = document.getElementById("asset-selector-input");
+  const graphSearchInput = document.getElementById("graph-search-input");
+  if (assetInput) {
+    assetInput.value = assetName;
+  }
+  if (graphSearchInput) {
+    graphSearchInput.value = assetName;
+  }
+
+  updateStatus(preset.status, "loading");
+
+  if (preset.graphMode === "risk-score") {
+    if (!currentGraphData) {
+      await fetchAttackPath();
+    }
+    await fetchRiskScore();
+  } else {
+    await fetchAttackPath();
+  }
+
+  await fetchAssetAnalysis(assetName);
+  searchGraphAsset(assetName, { focus: true, announce: false });
+  updateStatus(preset.status, "success");
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -3048,6 +3203,31 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("pause-simulation-button")?.addEventListener("click", pauseSimulation);
   document.getElementById("resume-simulation-button")?.addEventListener("click", resumeSimulation);
   document.getElementById("reset-simulation-button")?.addEventListener("click", resetSimulation);
+  document.getElementById("graph-search-button")?.addEventListener("click", () => {
+    searchGraphAsset(document.getElementById("graph-search-input")?.value || "");
+  });
+  document.getElementById("graph-search-clear")?.addEventListener("click", () => {
+    const graphSearchInput = document.getElementById("graph-search-input");
+    if (graphSearchInput) {
+      graphSearchInput.value = "";
+    }
+    clearGraphSearchHighlight();
+    updateStatus("Graph search cleared", "success");
+  });
+  document.getElementById("graph-search-input")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      searchGraphAsset(event.currentTarget.value);
+    }
+    if (event.key === "Escape") {
+      event.currentTarget.value = "";
+      clearGraphSearchHighlight();
+      updateStatus("Graph search cleared", "success");
+    }
+  });
+  document.querySelectorAll("[data-preset]").forEach((button) => {
+    button.addEventListener("click", () => applyScenarioPreset(button.getAttribute("data-preset")));
+  });
 
   updateStatus(`Frontend ready. API base URL: ${API_BASE_URL}`);
 

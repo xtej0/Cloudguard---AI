@@ -70,6 +70,14 @@ body {
   text-transform: uppercase;
 }
 
+.sidebar-section {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
 .sidebar button {
   border: 1px solid var(--border);
   background: var(--surface-elevated);
@@ -807,6 +815,37 @@ body {
   background: #1c2636;
 }
 
+.graph-search-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: min(100%, 420px);
+  margin-left: auto;
+}
+
+.graph-search-control label {
+  color: #9dafc3;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.graph-search-control input {
+  min-width: 150px;
+  flex: 1;
+  border: 1px solid #2f3b4e;
+  background: #111a26;
+  color: #d7e3f1;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.graph-search-control input:focus {
+  outline: 2px solid rgba(53, 208, 186, 0.35);
+  border-color: #35d0ba;
+}
+
 .graph-legend {
   display: flex;
   flex-wrap: wrap;
@@ -841,6 +880,12 @@ body {
   background: #ffa500;
   border-color: #ff4500;
   box-shadow: 0 0 10px rgba(255, 140, 0, 0.45);
+}
+
+.graph-legend .search-match {
+  background: #22d3ee;
+  border-color: #a5f3fc;
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.45);
 }
 
 /* Prediction highlight styles (static, non-simulation) */
@@ -1154,6 +1199,15 @@ body {
   .asset-selector-form input {
     min-width: 0;
     width: 100%;
+  }
+
+  .graph-search-control {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .graph-search-control input {
+    min-width: 0;
   }
 
   .risk-grid {

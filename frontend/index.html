@@ -21,6 +21,13 @@
         <button type="button" id="btnRiskScore">/risk-score</button>
         <button type="button" id="btnPredictCompromise">/predict-compromise</button>
         <button type="button" id="btnAssetAnalysis">/asset-analysis</button>
+
+        <section class="sidebar-section" aria-label="Scenario presets">
+          <h2>Presets</h2>
+          <button type="button" class="preset-button" data-preset="internet-to-database">Internet to Database</button>
+          <button type="button" class="preset-button" data-preset="web-server-focus">Web Server Focus</button>
+          <button type="button" class="preset-button" data-preset="iam-review">IAM Review</button>
+        </section>
       </aside>
 
       <main class="content" aria-label="CloudGuard dashboard">
@@ -102,6 +109,12 @@
             <button type="button" id="reset-graph">Reset</button>
             <button type="button" id="simulate-attack-button" disabled>Simulate Attack</button>
             <button type="button" id="export-analysis-btn">Export Analysis</button>
+            <div class="graph-search-control" role="search">
+              <label for="graph-search-input">Search</label>
+              <input id="graph-search-input" type="search" placeholder="Find asset" list="asset-name-options" autocomplete="off" />
+              <button type="button" id="graph-search-button">Focus</button>
+              <button type="button" id="graph-search-clear">Clear</button>
+            </div>
           </div>
 
           <div id="attack-simulation-panel" class="attack-simulation-panel" aria-label="Attack simulation status" aria-live="polite">
@@ -152,6 +165,7 @@
           <div id="legend" class="graph-legend" aria-label="Graph legend">
             <div><span class="risk"></span> High Risk</div>
             <div><span class="predicted"></span> Predicted Target</div>
+            <div><span class="search-match"></span> Search Match</div>
           </div>
 
           <!-- Graph Container -->
