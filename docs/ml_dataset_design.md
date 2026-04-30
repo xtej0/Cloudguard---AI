@@ -1,189 +1,123 @@
-# CloudGuard AI — Day 15: Synthetic Attack Dataset Design for ML
+# CloudGuard AI - Day 15 Synthetic Attack Dataset Design
 
-## 1) ML Problem Definition
+## 1. ML Problem Definition
 
-**Task type:** Binary classification
+CloudGuard AI uses a supervised multiclass classification model to predict an asset's compromise risk level from synthetic cloud posture and graph-derived features.
 
-**Objective:** Predict whether an asset will be compromised (`1`) or not compromised (`0`) based on graph-derived and security posture features.
+- Task type: multiclass classification
+- Prediction target: `risk_level`
+- Classes: `LOW`, `MEDIUM`, `HIGH`
+- Dataset file: `datasets/synthetic_attack_dataset.csv`
+- Generation script: `datasets/generate_dataset.py`
+- Training script: `ml/train_model.py`
+- Saved artifacts:
+  - `models/risk_model.pkl`
+  - `models/feature_encoders.pkl`
+  - `models/target_encoder.pkl`
 
-This dataset is fully synthetic and generated from attack-graph structure, asset exposure patterns, privilege relationships, and backend risk logic.
+The model does not predict a binary `compromised` flag. It predicts a risk class that is consumed by the backend prediction API and dashboard.
 
-**Prediction target:** `compromised`
+## 2. Dataset Shape
 
----
+The generator currently creates 10,000 synthetic rows using a fixed random seed (`42`) for reproducibility.
 
-## 2) Feature Set (Exact Columns)
+Each row represents one cloud asset scenario with correlated exposure, identity, vulnerability, network, and attack-path signals.
 
-The dataset uses exactly these feature columns:
+## 3. Actual Columns
 
-- `exposed_port`
-- `internet_exposed`
-- `privilege_level`
-- `vulnerability_score`
-- `network_depth`
-- `attack_path_count`
-- `shortest_attack_path`
-- `asset_criticality`
-- `lateral_movement_options`
+| Column | Role | Type | Description |
+|---|---|---|---|
+| `scenario_id` | metadata | string | Stable scenario identifier such as `SCN-00001`. Dropped before training. |
+| `asset_type` | feature | categorical | Asset category: `VM`, `Database`, `Bucket`, `IAM Role`, `Container`, or `Load Balancer`. |
+| `internet_exposed` | feature | binary int | Whether the asset is directly internet-exposed. |
+| `public_access` | feature | binary int | Whether broad/public access is enabled. |
+| `has_critical_data` | feature | binary int | Whether the asset stores sensitive or business-critical data. |
+| `weak_iam` | feature | binary int | Whether weak IAM controls are associated with the asset. |
+| `lateral_movement_possible` | feature | binary int | Whether the asset enables lateral movement. |
+| `privilege_escalation_possible` | feature | binary int | Whether privilege escalation paths are plausible. |
+| `open_port_count` | feature | integer | Number of open network ports. |
+| `vulnerability_count` | feature | integer | Total known vulnerability count. |
+| `critical_vulnerability_count` | feature | integer | Count of critical vulnerabilities. |
+| `misconfiguration_count` | feature | integer | Count of security misconfigurations. |
+| `attack_path_count` | feature | integer | Estimated number of attack paths involving the asset. |
+| `shortest_path_length` | feature | integer | Shortest attack-path length. `0` means no valid path exists. |
+| `exposure_score` | feature | float | Composite exposure score in the 0-100 range. |
+| `identity_risk_score` | feature | float | Composite identity-risk score in the 0-100 range. |
+| `network_risk_score` | feature | float | Composite network-risk score in the 0-100 range. |
+| `risk_level` | target | categorical | Final class label: `LOW`, `MEDIUM`, or `HIGH`. |
 
-No additional model input features are included in this Day 15 dataset design.
+## 4. Generation Logic
 
----
+`datasets/generate_dataset.py` builds scenarios with asset-specific probability profiles.
 
-## 3) Data Dictionary
+Examples:
 
-| Feature | Data Type | Description | Valid Range | Why It Matters for Security Risk |
-|---|---|---|---|---|
-| `exposed_port` | Integer | Count of externally reachable open ports on the asset. | 0-10 | More exposed services increase attack surface and exploit opportunities. |
-| `internet_exposed` | Integer (binary) | Whether the asset is directly reachable from the internet. | 0 or 1 | Internet-facing assets are easier to discover and attack, often serving as initial access points. |
-| `privilege_level` | Integer (ordinal) | Effective privilege available on or through the asset. | 1-5 (1=low, 5=admin/root) | Higher privilege enables stronger attacker control and easier pivoting to sensitive assets. |
-| `vulnerability_score` | Float | Aggregated vulnerability severity score (CVSS-like) for the asset. | 0.0-10.0 | High severity weaknesses are primary compromise drivers. |
-| `network_depth` | Integer | Number of hops from internet edge/entry point to the asset in the attack graph. | 1-10 | Lower depth means easier reachability; deeper assets are usually harder to access directly. |
-| `attack_path_count` | Integer | Number of distinct attack paths leading to the asset. | 0-25 | Multiple paths increase attacker optionality and resilience if one path is blocked. |
-| `shortest_attack_path` | Integer | Minimum hop length among all feasible attack paths to the asset. | 1-10 (or 99 when no path) | Short paths indicate faster, lower-effort compromise chains. |
-| `asset_criticality` | Integer (ordinal) | Business/security criticality rating of the asset. | 1-5 (1=low, 5=mission-critical) | Critical assets are typically high-value targets and receive focused attacker effort. |
-| `lateral_movement_options` | Integer | Number of immediate pivot opportunities from current foothold toward this asset (credential trust, reachable neighbors, role paths). | 0-15 | More lateral options increase probability of successful progression across the environment. |
+- VMs and load balancers are more likely to be internet-facing.
+- Databases are more likely to contain critical data.
+- Buckets are more likely to have public-access risk.
+- IAM roles are more likely to contain weak IAM and privilege-escalation signals.
 
-**Note on `shortest_attack_path`:** A value of `99` represents no reachable attack path. This sentinel value is allowed only when `attack_path_count = 0`.
+The generator derives:
 
----
+- `attack_path_count` from vulnerability, exposure, IAM, movement, and misconfiguration signals.
+- `shortest_path_length` from attack-path count, exposure, and movement flags.
+- `exposure_score`, `identity_risk_score`, and `network_risk_score` from weighted signal groups.
+- `risk_level` from an internal risk score with deterministic LOW/HIGH boundaries and controlled uncertainty in the MEDIUM/HIGH boundary.
 
-## 4) Label Definition
+## 5. Label Assignment
 
-**Label column:** `compromised`
+`risk_level` is assigned from an internal score:
 
-- `0` = asset not compromised
-- `1` = asset compromised
+- `LOW` if score is below 35.
+- `HIGH` if score is above 70.
+- `MEDIUM` or `HIGH` probabilistically in the middle region, weighted toward `MEDIUM`.
 
-### Label Generation Logic (Exact)
+This hybrid approach keeps low and high classes clear while preserving realistic uncertainty for borderline scenarios.
 
-`compromised = 1 if:`
+## 6. Training Pipeline
 
-- `vulnerability_score > 7`
-- `AND (internet_exposed == 1 OR attack_path_count > 0)`
-- `AND shortest_attack_path <= 3`
+`ml/train_model.py` performs the following steps:
 
-Otherwise, `compromised = 0`.
+1. Load `datasets/synthetic_attack_dataset.csv`.
+2. Reject a `risk_score` column if present to avoid leakage.
+3. Drop `scenario_id`.
+4. Split features from target:
+   - `X = dataset.drop(columns=["risk_level"])`
+   - `y = dataset["risk_level"]`
+5. Label-encode categorical features such as `asset_type`.
+6. Label-encode the target classes.
+7. Train a tuned `RandomForestClassifier`.
+8. Compare against `GradientBoostingClassifier`.
+9. Print accuracy, classification report, confusion matrix, and feature importance.
+10. Save model and encoders into `models/`.
 
-### Practical Modeling Note
+## 7. Model Selection
 
-For Day 15, the label is intentionally deterministic to create a controlled baseline dataset; future dataset versions may add controlled probabilistic variation/noise to better reflect real-world uncertainty.
+The selected model is a tuned Random Forest classifier because it performed slightly better than Gradient Boosting during Day 18 evaluation and provides useful feature-importance signals for explanations.
 
----
+See `docs/model_evaluation_day18.md` for the recorded evaluation summary.
 
-## 5) Dataset Size and Class Balance
+## 8. API Integration
 
-**Target dataset size:** 5000 samples
+`backend/app/ml_engine.py` loads:
 
-Two dataset variants will be produced:
+- `models/risk_model.pkl`
+- `models/feature_encoders.pkl`
+- `models/target_encoder.pkl`
 
-1. **Balanced dataset (50/50)**
-   - `compromised = 1`: 2500 samples
-   - `compromised = 0`: 2500 samples
+The `/predict-compromise` endpoint accepts the same feature fields used during training, returns:
 
-2. **Imbalanced dataset (20/80)**
-   - `compromised = 1`: 1000 samples
-   - `compromised = 0`: 4000 samples
+- `predicted_label`
+- `confidence`
+- `probabilities`
+- `feature_importance`
+- graph/risk-derived `next_targets`
 
-This supports model development under both controlled training balance and realistic low-prevalence compromise scenarios.
+The endpoint name remains `/predict-compromise` for continuity, but the model output is a risk-level classification rather than a binary compromise decision.
 
----
+## 9. Limitations
 
-## 6) Synthetic Data Generation Rules
-
-### A. Realistic Distributions
-
-- `internet_exposed`: Bernoulli distribution with lower prevalence than internal-only assets (e.g., minority internet-facing population).
-- `vulnerability_score`: Right-skewed toward medium values, with fewer extreme high values.
-- `exposed_port`: Low-count heavy distribution (most assets expose few ports, few assets expose many).
-- `network_depth`: Mid-depth concentration with fewer assets at extreme edge or deep-core positions.
-- `attack_path_count`: Zero-inflated distribution (many assets with 0-2 paths, fewer with large path counts).
-- `privilege_level` and `asset_criticality`: Ordinal distributions with more mid-tier values than extremes.
-- `lateral_movement_options`: Correlated count distribution, usually small-to-moderate with occasional high-mobility assets.
-
-### B. Relationship Rules Between Features
-
-To keep synthetic data consistent with cloud attack graph logic:
-
-- If `internet_exposed = 1`, `network_depth` tends to be lower (edge-accessible assets should not systematically appear deep in network layers).
-- If `attack_path_count = 0`, set `shortest_attack_path = 99` (no valid route sentinel).
-- If `attack_path_count > 0`, constrain `shortest_attack_path` to 1-10.
-- Higher `attack_path_count` generally co-occurs with higher `lateral_movement_options`.
-- Higher `privilege_level` increases expected `lateral_movement_options` due to greater pivot capability.
-- Higher `vulnerability_score` should increase probability of `compromised = 1` only when reachability conditions (internet/path) are also present.
-
-### C. Hard Constraints
-
-- Enforce valid ranges from the Data Dictionary for every generated sample.
-- Enforce label rule exactly as defined (do not use probabilistic overrides for labeling).
-- Preserve internal consistency:
-  - `attack_path_count = 0` -> `shortest_attack_path = 99`
-  - `shortest_attack_path <= 3` can only occur when `attack_path_count > 0` or exposure enables feasible direct access context.
-- Avoid contradictory combinations at scale (for example, very deep assets with persistent direct internet exposure should be rare).
-
----
-
-## 7) Generation Strategy
-
-Data will be created programmatically using a staged synthetic pipeline (no manual row authoring):
-
-1. **Schema-first initialization**
-   - Create an empty dataset with exactly the nine feature columns plus `compromised`.
-
-2. **Base sampling by feature type**
-   - Sample each feature from its defined distribution family (binary, ordinal, continuous, count).
-
-3. **Dependency adjustment pass**
-   - Apply relationship rules to enforce graph realism (e.g., internet exposure vs. depth, path count vs. shortest path, privilege vs. lateral movement).
-
-4. **Constraint validation pass**
-   - Clip/fix out-of-range values and resolve invalid tuples.
-
-5. **Deterministic labeling pass**
-   - Compute `compromised` strictly from the exact rule:
-     - `vulnerability_score > 7`
-     - `AND (internet_exposed == 1 OR attack_path_count > 0)`
-     - `AND shortest_attack_path <= 3`
-
-6. **Class-balance curation**
-   - Produce two outputs from the same generation framework:
-     - Balanced 5000-sample set (50/50)
-     - Imbalanced 5000-sample set (20/80)
-
-7. **Quality checks and export**
-   - Verify class counts, range conformance, and dependency consistency.
-   - Export as tabular dataset files for ML training/validation workflows.
-
----
-
-## 8) Feature Coverage Review (Redundancy/Missing)
-
-### Redundancy Check
-
-- Potential overlap exists between `attack_path_count`, `shortest_attack_path`, and `lateral_movement_options` because all capture graph reachability in different ways.
-- This is acceptable for Day 15 because each captures a distinct security perspective:
-  - path multiplicity (`attack_path_count`),
-  - minimum attacker effort (`shortest_attack_path`),
-  - local pivot flexibility (`lateral_movement_options`).
-- Recommendation: keep all three for now; evaluate feature importance after initial model training.
-
-### Missing Signal Check (Future Improvements, Not Added to Current Schema)
-
-Current schema is valid and sufficient for initial binary compromise prediction, but future versions may benefit from adding:
-
-- Patch recency / remediation status
-- Identity exposure (e.g., stale privileged credentials)
-- External exploit availability / threat intelligence indicator
-- Segmentation strength or policy enforcement score
-
-These are not included in this Day 15 dataset because the feature list is fixed by design.
-
----
-
-## 9) Intended Initial ML Models
-
-- **Logistic Regression**: Strong baseline for binary classification with interpretable feature influence, useful for validating signal direction in security features.
-- **Random Forest**: Handles nonlinear interactions in attack-graph-derived tabular data and is robust to mixed feature scales and noisy relationships.
-- **XGBoost / Gradient Boosting**: Typically high-performing on structured/tabular cybersecurity datasets by modeling complex feature interactions and decision boundaries.
-
-These models are well-suited to this tabular compromise-likelihood task and provide a practical progression from interpretable baseline to higher-capacity ensemble methods.
+- The dataset is synthetic and should be described as simulated training data.
+- `risk_level` labels are generated from engineered rules, so metrics may overstate real-world performance.
+- The model predicts asset risk class, while next-target ranking also uses graph and risk context.
+- Future work could add real cloud telemetry, time-series behavior, remediation status, and threat-intelligence signals.

@@ -50,7 +50,15 @@ The following endpoints all return the same unified schema:
     "next_targets": []
   },
   "summary": {},
-  "mitigations": []
+  "mitigations": [
+    {
+      "title": "Limit Lateral Movement",
+      "recommendation": "Implement network segmentation and stricter east-west access controls between assets.",
+      "severity": "HIGH",
+      "priority": "P1",
+      "reason": "Lateral movement paths enable attackers to pivot deeper into the environment."
+    }
+  ]
 }
 ```
 
@@ -147,30 +155,25 @@ Contains risk assessment data for assets.
 
 ---
 
-### 3. **`prediction` Section** (ML Predictions - Future Placeholder)
+### 3. **`prediction` Section** (Next-Target Ranking)
 
-Reserved for future machine learning predictions.
+Contains ranked next-compromise targets when graph and risk context is available.
 
-**Purpose:** Will contain AI-generated predictions about likely next attack targets and probabilities.
+**Purpose:** Surface likely next targets using graph reachability, asset risk, and model context.
 
-**Current State:** Empty placeholder for extensibility
-- `next_targets` (array): Future ML predictions will go here
+- `next_targets` (array): Ranked target candidates. It can be empty when no graph context is available.
 
 **Example:**
 ```json
 {
   "prediction": {
-    "next_targets": []
-  }
-}
-```
-
-**Future Usage:** Will contain predictions like:
-```json
-{
-  "prediction": {
     "next_targets": [
-      { "target": "Cache Server", "probability": 0.87 }
+      {
+        "node": "Application Server VM",
+        "probability": 0.82,
+        "label": "HIGH",
+        "reasons": ["Directly connected to a high-risk asset"]
+      }
     ]
   }
 }
@@ -220,19 +223,23 @@ Contains contextual information about the response.
 
 ### 5. **`mitigations` Section** (Security Recommendations)
 
-Reserved for future security recommendations.
+Contains contextual rule-based security recommendations.
 
-**Purpose:** Will suggest security actions to reduce risk.
+**Purpose:** Suggest security actions to reduce exposure, identity risk, vulnerability risk, lateral movement, and data impact.
 
-**Current State:** Empty placeholder for extensibility
-- `mitigations` (array): Future recommendations will go here
+- `mitigations` (array): Recommendation objects. It can be empty when no risk context is available.
 
-**Example (Future):**
+**Example:**
 ```json
 {
   "mitigations": [
-    { "action": "Enable WAF", "priority": "HIGH", "impact": "Reduces attack surface by 40%" },
-    { "action": "Network segmentation", "priority": "CRITICAL", "impact": "Isolates critical assets" }
+    {
+      "title": "Patch Critical Vulnerabilities",
+      "recommendation": "Prioritize and patch critical vulnerabilities immediately using emergency remediation timelines.",
+      "severity": "HIGH",
+      "priority": "P1",
+      "reason": "Critical vulnerabilities present immediate exploit risk."
+    }
   ]
 }
 ```
@@ -435,6 +442,7 @@ cyInstance.add(edges);
 
 - [ ] **`mitigations` section exists**
   - [ ] `mitigations` is an array (can be empty `[]`)
+  - [ ] Each non-empty mitigation has `title`, `recommendation`, `severity`, `priority`, and `reason`
 
 - [ ] **No field naming inconsistencies**
   - [ ] All responses use same key names across endpoints
@@ -514,7 +522,7 @@ if (data.summary && Object.keys(data.summary).length > 0) {
 - ✅ All endpoints return the **same unified schema**
 - ✅ Graph data is **Cytoscape-compatible**
 - ✅ Response is **frontend-ready**
-- ✅ Extensible for future features (predictions, mitigations)
+- ✅ Includes next-target predictions and contextual mitigations
 - ✅ Consistent field naming across all endpoints
 - ✅ Validated with Pydantic schemas
 

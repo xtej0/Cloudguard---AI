@@ -48,7 +48,7 @@ def build_attack_risk_summary_response(
     risk_top_assets: list[dict[str, Any]],
     summary: dict[str, Any],
     prediction: list[dict[str, Any]] | None = None,
-    mitigations: list[str] | None = None,
+    mitigations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build unified attack-risk summary response schema."""
     return {
@@ -93,7 +93,11 @@ def build_attack_path_response(
         risk_top_assets=[],
         summary=summary,
         prediction=predict_next_targets(nodes=nodes, target=target),
-        mitigations=get_mitigation_recommendations(),
+        mitigations=get_mitigation_recommendations(
+            asset_name=target,
+            attack_path_count=1 if nodes else 0,
+            lateral_movement_possible=1 if len(nodes) > 2 else 0,
+        ),
     )
 
 
@@ -154,7 +158,11 @@ def build_all_paths_response(
         risk_top_assets=[],
         summary=summary,
         prediction=predict_next_targets(paths=paths, target=target),
-        mitigations=get_mitigation_recommendations(),
+        mitigations=get_mitigation_recommendations(
+            asset_name=target,
+            attack_path_count=len(paths),
+            lateral_movement_possible=1 if paths else 0,
+        ),
     )
 
 
@@ -180,7 +188,7 @@ def build_risk_score_response(top_assets: list[dict[str, Any]]) -> dict[str, Any
         risk_top_assets=transformed_assets,
         summary=summary,
         prediction=predict_next_targets(top_assets=top_assets),
-        mitigations=get_mitigation_recommendations(),
+        mitigations=get_mitigation_recommendations(risk_assets=transformed_assets),
     )
 
 
@@ -199,7 +207,9 @@ def build_attack_risk_response(
             target=target,
         )
 
-    nodes = summary_data.get("attack_path", {}).get("nodes", [])
+    attack_path = summary_data.get("attack_path", {})
+    nodes = attack_path.get("nodes", [])
+    relationships = attack_path.get("relationships", [])
 
     start_asset = start if start is not None else summary_data.get("start")
     target_asset = target if target is not None else summary_data.get("target")
@@ -237,11 +247,21 @@ def build_attack_risk_response(
     }
 
     return build_attack_risk_summary_response(
-        graph=build_graph_response(nodes, []),
+        graph=build_graph_response(nodes, relationships),
         risk_top_assets=top_assets,
         summary=summary,
         prediction=predict_next_targets(nodes=nodes, target=target_asset),
-        mitigations=get_mitigation_recommendations(risk_level=risk_analysis.get("risk_level")),
+        mitigations=get_mitigation_recommendations(
+            asset={
+                "asset_name": target_asset,
+                "risk_level": risk_analysis.get("risk_level"),
+                "contributing_factors": risk_analysis.get("factors", []),
+                "attack_path_details": {
+                    "attack_path_count": 1 if nodes else 0,
+                    "shortest_attack_path_length": max(path_length - 1, 0) if path_length else None,
+                },
+            }
+        ),
     )
 
 
@@ -270,7 +290,13 @@ def build_single_asset_risk_response(asset_data: dict[str, Any]) -> dict[str, An
         ],
         summary=summary,
         prediction=predict_next_targets(asset_name=asset_name),
-        mitigations=get_mitigation_recommendations(risk_level=risk_level),
+        mitigations=get_mitigation_recommendations(
+            asset={
+                "asset_name": asset_name,
+                "risk_level": risk_level,
+                "attack_path_details": attack_path_details,
+            }
+        ),
     )
 
 
@@ -288,5 +314,5 @@ def build_response(graph_nodes: list[dict[str, Any]], graph_edges: list[dict[str
         risk_top_assets=risk_assets,
         summary=summary,
         prediction=predict_next_targets(risk_assets=risk_assets),
-        mitigations=get_mitigation_recommendations(),
+        mitigations=get_mitigation_recommendations(risk_assets=risk_assets),
     )

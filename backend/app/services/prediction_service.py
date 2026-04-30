@@ -27,10 +27,68 @@ def _is_attackable_node_type(node_type: str) -> bool:
 
 def _prediction_reason_for_depth(distance: int, fallback: bool = False) -> str:
     if fallback:
-        return "Predicted based on overall risk distribution"
+        return "Ranked from overall risk distribution"
     if distance <= 1:
         return "Directly connected to a high-risk asset"
     return "Reachable through attack path from high-risk asset"
+
+
+def _risk_asset_lookup(risk_assets: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for asset in risk_assets or []:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("asset_name") or asset.get("asset") or asset.get("name") or asset.get("node") or "").strip()
+        if name:
+            lookup[name.lower()] = asset
+    return lookup
+
+
+def _model_probability_context(model_result: dict[str, Any] | None) -> float:
+    if not isinstance(model_result, dict):
+        return 0.55
+
+    predicted_label = str(model_result.get("predicted_label") or "").upper()
+    confidence = model_result.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.55
+
+    label_floor = {
+        "HIGH": 0.78,
+        "MEDIUM": 0.62,
+        "LOW": 0.38,
+    }.get(predicted_label, 0.55)
+
+    return max(label_floor, min(confidence_value, 0.98))
+
+
+def compute_target_probability(
+    node_id: str,
+    distance: int,
+    risk_assets_by_name: dict[str, dict[str, Any]] | None = None,
+    model_result: dict[str, Any] | None = None,
+) -> float:
+    """Score next-target likelihood from risk ranking, graph distance, and model context."""
+
+    risk_assets_by_name = risk_assets_by_name or {}
+    risk_asset = risk_assets_by_name.get(str(node_id or "").strip().lower(), {})
+
+    try:
+        risk_component = float(risk_asset.get("risk_score", 55.0)) / 100.0
+    except (TypeError, ValueError):
+        risk_component = 0.55
+
+    graph_component = 1.0 if distance <= 1 else 0.86 if distance == 2 else 0.72
+    model_component = _model_probability_context(model_result)
+
+    probability = (
+        0.45 * max(0.0, min(risk_component, 1.0))
+        + 0.30 * max(0.0, min(graph_component, 1.0))
+        + 0.25 * max(0.0, min(model_component, 1.0))
+    )
+    return round(max(0.05, min(probability, 0.99)), 4)
 
 @dataclass
 class PredictionGraphView:
@@ -88,23 +146,6 @@ class PredictionGraphView:
         return self.node_depths.get(normalized)
 
 
-def pseudo_random_from_id(node_id: str) -> float:
-    value = str(node_id or "")
-    hash_value = 0
-
-    for character in value:
-        hash_value = ord(character) + ((hash_value << 5) - hash_value)
-
-    return abs(hash_value % 100) / 100.0
-
-
-def compute_stable_probability(node_id: str) -> float:
-    base = 0.6
-    spread = 0.3
-    variation = pseudo_random_from_id(node_id)
-    return min(base + variation * spread, 0.95)
-
-
 def get_risk_label(probability: float) -> str:
     if probability >= 0.80:
         return "HIGH"
@@ -114,7 +155,7 @@ def get_risk_label(probability: float) -> str:
 
 
 def get_high_risk_node_ids(risk_assets: list[dict[str, Any]] | None = None) -> list[str]:
-    assets = list(risk_assets or get_top_asset_risk_scores())
+    assets = list(risk_assets) if risk_assets is not None else list(get_top_asset_risk_scores())
     high_risk = [
         str(asset.get("asset_name") or asset.get("asset") or asset.get("name") or "").strip()
         for asset in assets
@@ -175,10 +216,16 @@ def build_prediction_graph(seed_node_ids: list[str]) -> PredictionGraphView:
     return graph
 
 
-def derive_next_targets(graph: PredictionGraphView, high_risk_nodes: list[str]) -> list[dict[str, Any]]:
+def derive_next_targets(
+    graph: PredictionGraphView,
+    high_risk_nodes: list[str],
+    risk_assets: list[dict[str, Any]] | None = None,
+    model_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     predictions: list[dict[str, Any]] = []
     seen_nodes: dict[str, dict[str, Any]] = {}
     high_risk_set = {str(node_id).strip() for node_id in high_risk_nodes if str(node_id).strip()}
+    risk_assets_by_name = _risk_asset_lookup(risk_assets)
 
     for target_id in sorted(graph.nodes):
         if target_id in high_risk_set:
@@ -193,12 +240,17 @@ def derive_next_targets(graph: PredictionGraphView, high_risk_nodes: list[str]) 
             continue
 
         reason = _prediction_reason_for_depth(distance)
-        probability = compute_stable_probability(target_id)
+        probability = compute_target_probability(
+            target_id,
+            distance=distance,
+            risk_assets_by_name=risk_assets_by_name,
+            model_result=model_result,
+        )
         prediction = {
             "node": target_id,
             "probability": probability,
             "label": get_risk_label(probability),
-            "reasons": [reason],
+            "reasons": [reason, "Ranked using graph reachability, asset risk, and model context"],
         }
 
         existing = seen_nodes.get(target_id)
@@ -213,6 +265,7 @@ def derive_next_targets(graph: PredictionGraphView, high_risk_nodes: list[str]) 
 def predict_next_targets(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
     """Return predicted next targets for an attack path context."""
     risk_assets = _kwargs.get("risk_assets")
+    model_result = _kwargs.get("model_result")
     seed_node_ids = get_high_risk_node_ids(risk_assets if isinstance(risk_assets, list) else None)
 
     if not seed_node_ids:
@@ -245,20 +298,26 @@ def predict_next_targets(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
                     if candidate_nodes:
                         seed_node_ids.append(str(candidate_nodes[-1]).strip())
 
-    if not seed_node_ids:
+    if not seed_node_ids and not (isinstance(risk_assets, list) and len(risk_assets) == 0):
         seed_node_ids = get_high_risk_node_ids(get_top_asset_risk_scores())
 
     seed_node_ids = [node_id for node_id in dict.fromkeys(seed_node_ids) if node_id]
     if not seed_node_ids:
-        return derive_next_targets(PredictionGraphView(), [])
+        return derive_next_targets(PredictionGraphView(), [], risk_assets if isinstance(risk_assets, list) else None, model_result)
 
     graph = build_prediction_graph(seed_node_ids)
-    predictions = derive_next_targets(graph, seed_node_ids)
+    predictions = derive_next_targets(
+        graph,
+        seed_node_ids,
+        risk_assets if isinstance(risk_assets, list) else None,
+        model_result if isinstance(model_result, dict) else None,
+    )
     if predictions:
         return predictions
 
     fallback_predictions: list[dict[str, Any]] = []
     top_assets = _kwargs.get("risk_assets") if isinstance(_kwargs.get("risk_assets"), list) else get_top_asset_risk_scores()
+    risk_assets_by_name = _risk_asset_lookup(top_assets if isinstance(top_assets, list) else None)
     for asset in top_assets:
         if not isinstance(asset, dict):
             continue
@@ -268,13 +327,18 @@ def predict_next_targets(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         if not node_id or not _is_attackable_node_type(node_type):
             continue
 
-        probability = compute_stable_probability(node_id)
+        probability = compute_target_probability(
+            node_id,
+            distance=0,
+            risk_assets_by_name=risk_assets_by_name,
+            model_result=model_result if isinstance(model_result, dict) else None,
+        )
         fallback_predictions.append(
             {
                 "node": node_id,
                 "probability": probability,
                 "label": get_risk_label(probability),
-                "reasons": [_prediction_reason_for_depth(0, fallback=True)],
+                "reasons": [_prediction_reason_for_depth(0, fallback=True), "Ranked using asset risk and model context"],
             }
         )
 

@@ -18,8 +18,8 @@ All route handlers return a unified response envelope (version, graph, risk, pre
 | `app/services/risk_service.py` | Risk scoring engine (input collection, normalization, weighted scoring, ranking) | Called by routes and attack-risk service |
 | `app/services/attack_risk_service.py` | Orchestrates shortest-path + target risk calculation into one summary payload | Uses `get_shortest_attack_path` and `calculate_risk_score` |
 | `app/services/summary_service.py` | Builds user-facing summary messages and UTC timestamp | Used by response builders |
-| `app/services/prediction_service.py` | Prediction placeholder (`predict_next_targets`) | Currently returns empty list |
-| `app/services/mitigation_service.py` | Mitigation placeholder (`get_mitigation_recommendations`) | Currently returns empty list |
+| `app/services/prediction_service.py` | Ranks graph-derived next targets using reachability, asset risk, and optional model context | Used by prediction and unified response builders |
+| `app/services/mitigation_service.py` | Converts risk payloads into contextual mitigation-engine inputs | Uses `app/mitigation_engine.py` |
 | `app/builders/response_builder.py` | Constructs unified response payloads for each endpoint use case | Uses summary/prediction/mitigation services and graph formatter |
 | `app/utils/graph_formatter.py` | Converts path data to Cytoscape-style nodes/edges | Used by response builder graph sections |
 | `app/schemas.py` | Pydantic response schema (`FinalResponse` and nested models) | Bound as `response_model` on route handlers |
@@ -456,12 +456,13 @@ The project includes both API-level and unit-level tests under `tests/`:
 ## 9. Current Limitations
 Based on current implementation:
 
-1. **Prediction and mitigation are placeholders**
-   - `predict_next_targets()` returns `[]`.
-   - `get_mitigation_recommendations()` returns `[]`.
+1. **Next-target ranking is hybrid intelligence**
+   - `/predict-compromise` uses the trained ML model for risk-level prediction.
+   - `predict_next_targets()` ranks likely next targets from graph reachability, ranked asset risk, and model context. It is not a separate per-target ML classifier.
 
-2. **Risk model is deterministic rule-based logic**
-   - No ML model or learned weights; scoring is fixed-weight heuristic logic in `risk_service.py`.
+2. **Risk scoring is deterministic rule-based logic**
+   - `/risk-score` uses fixed weighted graph/security factors in `risk_service.py`.
+   - The ML model predicts `risk_level` from synthetic posture features; it does not replace deterministic graph risk scoring.
 
 3. **Seeded graph is a compact demo topology**
    - `seed_graph.py` inserts a small static environment (Internet/VM/Database/Bucket/User/IAMRole).
@@ -469,13 +470,10 @@ Based on current implementation:
 4. **Path query breadth can grow quickly**
    - `/all-paths` uses variable-length directed path matching without explicit hop cap in that endpoint query.
 
-5. **`/attack-risk-summary` graph edges lose relationship labels**
-   - Builder uses `build_graph_response(nodes, [])`, so edge labels default to `UNKNOWN` in that endpoint output.
-
-6. **Error semantics are envelope-based**
+5. **Error semantics are envelope-based**
    - Service-level errors for attack-risk summary are represented in `summary.error` instead of HTTP 4xx for domain errors like no-path.
 
-7. **Runtime depends on external Neo4j environment variables**
+6. **Runtime depends on external Neo4j environment variables**
    - Missing Neo4j configuration prevents successful DB-backed endpoint behavior.
 
 ## 10. Conclusion

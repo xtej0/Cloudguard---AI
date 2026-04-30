@@ -36,13 +36,21 @@ class PredictionData(BaseModel):
     next_targets: List[Dict[str, Any]]
 
 
+class MitigationData(BaseModel):
+    title: str
+    recommendation: str
+    severity: str
+    priority: str
+    reason: str
+
+
 class FinalResponse(BaseModel):
     version: Optional[str] = "v1"
     graph: GraphData
     risk: RiskData
     prediction: PredictionData
     summary: Dict[str, Any]
-    mitigations: List[str]
+    mitigations: List[MitigationData]
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -72,9 +80,13 @@ class FinalResponse(BaseModel):
                     "generated_at": "2026-04-10T12:00:00+00:00",
                 },
                 "mitigations": [
-                    "Restrict public exposure",
-                    "Apply least privilege IAM policies",
-                    "Patch critical vulnerabilities",
+                    {
+                        "title": "Restrict Public Exposure",
+                        "recommendation": "Limit public ingress to required services only.",
+                        "severity": "HIGH",
+                        "priority": "P1",
+                        "reason": "Internet exposure increases exploitability.",
+                    },
                 ],
             }
         }
@@ -107,6 +119,7 @@ __all__ = [
     "GraphData",
     "RiskData",
     "PredictionData",
+    "MitigationData",
     "FinalResponse",
     "RootResponse",
     "HealthResponse",

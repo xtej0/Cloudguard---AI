@@ -30,6 +30,8 @@ def test_attack_risk_summary_success():
     assert isinstance(data["graph"]["nodes"], list)
     assert len(data["graph"]["nodes"]) > 0
     assert "edges" in data["graph"]
+    assert data["graph"]["edges"]
+    assert all(edge["data"]["label"] != "UNKNOWN" for edge in data["graph"]["edges"])
 
     # Risk checks
     assert "top_assets" in data["risk"]
@@ -38,6 +40,8 @@ def test_attack_risk_summary_success():
     assert "generated_at" in data["summary"]
     assert "overall_risk_level" in data["summary"]
     assert "highest_risk" in data["summary"]
+    assert data["mitigations"]
+    assert {"title", "recommendation", "severity", "priority", "reason"}.issubset(data["mitigations"][0].keys())
 
 
 def test_attack_risk_summary_no_path():

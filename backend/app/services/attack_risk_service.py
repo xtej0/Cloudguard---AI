@@ -8,14 +8,18 @@ from app.services.risk_service import calculate_risk_score
 
 def _extract_attack_path_summary(path_result: Any) -> dict[str, Any]:
     if not isinstance(path_result, dict):
-        return {"nodes": [], "length": 0}
+        return {"nodes": [], "relationships": [], "length": 0}
 
     nodes = path_result.get("nodes")
     if not isinstance(nodes, list):
         nodes = []
 
     if not nodes:
-        return {"nodes": [], "length": 0}
+        return {"nodes": [], "relationships": [], "length": 0}
+
+    relationships = path_result.get("relationships")
+    if not isinstance(relationships, list):
+        relationships = []
 
     path_length = path_result.get("path_length")
     if not isinstance(path_length, int):
@@ -23,6 +27,7 @@ def _extract_attack_path_summary(path_result: Any) -> dict[str, Any]:
 
     return {
         "nodes": nodes,
+        "relationships": relationships,
         "length": path_length,
     }
 
@@ -103,6 +108,7 @@ def get_attack_risk_summary(start: str, target: str) -> dict[str, Any]:
         "target": target_value,
         "attack_path": {
             "nodes": attack_path["nodes"],
+            "relationships": attack_path["relationships"],
             "length": attack_path["length"],
         },
         "risk_analysis": {

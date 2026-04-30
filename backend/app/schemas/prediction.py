@@ -89,7 +89,7 @@ class PredictionRequest(BaseModel):
 class PredictionResponse(BaseModel):
     next_targets: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Graph-derived next compromise targets ranked by likelihood.",
+        description="Next compromise targets ranked from graph reachability, asset risk, and model context.",
         json_schema_extra={
             "example": [
                 {

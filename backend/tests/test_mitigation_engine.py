@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.mitigation_engine import generate_mitigations
+from app.services.mitigation_service import get_mitigation_recommendations
 
 
 def _titles(items: list[dict]) -> set[str]:
@@ -61,3 +62,23 @@ def test_multiple_high_risk_flags_adds_combined_recommendation():
 
 def test_no_issues_returns_empty_list():
     assert generate_mitigations({}) == []
+
+
+def test_mitigation_service_translates_risk_asset_context():
+    results = get_mitigation_recommendations(
+        asset={
+            "asset_name": "Database Server",
+            "node_type": "Database",
+            "risk_level": "HIGH",
+            "contributing_factors": [
+                "High vulnerability severity on this asset",
+                "1 distinct attack path(s) from likely entry points",
+            ],
+            "attack_path_details": {"attack_path_count": 1, "shortest_attack_path_length": 3},
+        }
+    )
+
+    titles = _titles(results)
+    assert "Patch Critical Vulnerabilities" in titles
+    assert "Protect Critical Data" in titles
+    assert all({"title", "recommendation", "severity", "priority", "reason"}.issubset(item.keys()) for item in results)

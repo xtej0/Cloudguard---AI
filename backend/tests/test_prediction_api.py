@@ -35,6 +35,7 @@ def test_prediction_endpoint_success():
     assert "predicted_label" in data
     assert "confidence" in data
     assert "probabilities" in data
+    assert "next_targets" in data
 
 
 def test_prediction_validation_error():
@@ -52,6 +53,11 @@ def test_prediction_output_types():
     assert isinstance(data["confidence"], float)
     assert isinstance(data["probabilities"], dict)
     assert isinstance(data["predicted_label"], str)
+    assert isinstance(data["next_targets"], list)
+    if data["next_targets"]:
+        target = data["next_targets"][0]
+        assert {"node", "probability", "label", "reasons"}.issubset(target.keys())
+        assert isinstance(target["probability"], float)
 
 
 def test_feature_importance_structure():

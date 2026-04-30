@@ -2,6 +2,7 @@ import logging
 import time
 
 from fastapi import APIRouter, HTTPException
+from neo4j.exceptions import AuthError, Neo4jError, ServiceUnavailable
 
 from app.ml_engine import predict_compromise
 from app.services.prediction_service import predict_next_targets
@@ -71,7 +72,16 @@ def predict_compromise_risk(payload: PredictionRequest) -> PredictionResponse:
                 detail="Prediction failed due to an internal model processing error.",
             )
 
-        next_targets = predict_next_targets(risk_assets=get_top_asset_risk_scores())
+        try:
+            risk_assets = get_top_asset_risk_scores()
+        except (ServiceUnavailable, AuthError, Neo4jError) as exc:
+            logger.warning("Risk graph unavailable while ranking next targets: %s", exc)
+            risk_assets = []
+
+        next_targets = predict_next_targets(
+            risk_assets=risk_assets,
+            model_result=result,
+        )
         if not next_targets:
             next_targets = [
                 {
