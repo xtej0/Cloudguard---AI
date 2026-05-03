@@ -1,40 +1,8 @@
-# CloudGuard AI - Unified Response Schema Documentation
+# CloudGuard AI Unified Response Structure
 
-## Overview
+## Contract
 
-All endpoints in the CloudGuard AI backend return a **unified, frontend-ready JSON response structure**. This ensures consistency across the API and simplifies frontend integration with Cytoscape visualization.
-
----
-
-## All Available Endpoints
-
-The following endpoints all return the same unified schema:
-
-1. **`GET /attack-path`** - Get shortest attack path between two assets
-   - Parameters: `start` (asset name), `target` (asset name)
-   - Returns: Shortest path with nodes and edges
-
-2. **`GET /all-paths`** - Get all possible attack paths between two assets
-   - Parameters: `start` (asset name), `target` (asset name)  
-   - Returns: All paths aggregated into graph format
-
-3. **`GET /risk-score`** - Get risk scores for all top-risk assets
-   - Parameters: None
-   - Returns: Ranked list of high-risk assets
-
-4. **`GET /risk-score/{asset_name}`** - Get risk score for a single asset
-   - Parameters: `asset_name` (string)
-   - Returns: Single asset risk details
-
-5. **`GET /attack-risk-summary`** - Get attack risk analysis between two assets
-   - Parameters: `start` (asset name), `target` (asset name)
-   - Returns: Combined attack path and risk analysis
-
----
-
-## Unified Response Schema
-
-**Every endpoint returns this exact structure:**
+The main backend analysis endpoints return the same top-level JSON envelope:
 
 ```json
 {
@@ -50,480 +18,232 @@ The following endpoints all return the same unified schema:
     "next_targets": []
   },
   "summary": {},
-  "mitigations": [
-    {
-      "title": "Limit Lateral Movement",
-      "recommendation": "Implement network segmentation and stricter east-west access controls between assets.",
-      "severity": "HIGH",
-      "priority": "P1",
-      "reason": "Lateral movement paths enable attackers to pivot deeper into the environment."
-    }
-  ]
+  "mitigations": []
 }
 ```
 
-### Error Handling Contract
+The envelope is typed by `app/schemas/__init__.py` as `FinalResponse`.
 
-Errors are returned using the same unified schema. There is no standalone top-level
-`{"error": ...}` payload. Instead, error details are placed under `summary.error`.
+## Endpoints
+
+| Method | Route | Notes |
+|---|---|---|
+| `GET` | `/attack-path` | Shortest directed path between `start` and `target` assets |
+| `GET` | `/all-paths` | All directed paths between `start` and `target`, aggregated into one graph |
+| `GET` | `/attack-risk-summary` | Shortest path plus target risk, predictions, and mitigations |
+| `GET` | `/risk-score` | Risk-ranked important assets |
+| `GET` | `/risk-score/{asset_name}` | Risk details for one asset |
+
+`/predict-compromise` and `/asset-analysis/{asset_name}` use endpoint-specific schemas in `app/schemas/prediction.py` and `app/schemas/integrated_analysis.py`.
+
+## `graph`
+
+`graph.nodes` and `graph.edges` are Cytoscape-compatible objects.
+
+Node format:
 
 ```json
 {
-  "version": "v1",
-  "graph": { "nodes": [], "edges": [] },
-  "risk": { "top_assets": [] },
-  "prediction": { "next_targets": [] },
-  "mitigations": [],
-  "summary": {
-    "error": "No attack path found between given nodes"
+  "data": {
+    "id": "Internet",
+    "label": "Internet",
+    "type": "asset"
   }
 }
 ```
 
----
+Edge format:
 
-## Response Schema Sections Explained
-
-### 1. **`graph` Section** (For Cytoscape Visualization)
-
-Contains the attack path graph in **Cytoscape-compatible format**.
-
-**Purpose:** Visualize network topology and attack paths in the frontend.
-
-**Structure:**
-- `nodes` (array): List of assets/nodes in the graph
-  - Each node is wrapped in a `data` object
-  - Contains: `id`, `label`, `type`
-
-- `edges` (array): List of relationships between nodes
-  - Each edge is wrapped in a `data` object
-  - Contains: `source`, `target`, `label` (relationship type)
-
-**Example:**
 ```json
 {
-  "graph": {
-    "nodes": [
-      { "data": { "id": "Internet", "label": "Internet", "type": "asset" } },
-      { "data": { "id": "Web Server", "label": "Web Server", "type": "asset" } }
-    ],
-    "edges": [
-      { "data": { "source": "Internet", "target": "Web Server", "label": "ATTACK" } }
-    ]
+  "data": {
+    "source": "Internet",
+    "target": "Web Server VM",
+    "label": "EXPOSED_TO"
   }
 }
 ```
 
----
+Path endpoints preserve Neo4j relationship labels such as `EXPOSED_TO`, `CONNECTS_TO`, `HAS_ACCESS`, and `STORES_DATA_IN`. Edges are directional: `source` -> `target`.
 
-### 2. **`risk` Section** (Risk Rankings)
+## `risk`
 
-Contains risk assessment data for assets.
+`risk.top_assets` is a list of asset risk records. Records can include:
 
-**Purpose:** Display which assets are at highest risk and why.
-
-**Structure:**
-- `top_assets` (array): List of high-risk assets, sorted by risk score (descending)
-  - Each asset contains:
-    - `asset_name` (string): Name of the asset
-    - `risk_score` (float 0-100): Numerical risk score
-    - `risk_level` (string): Risk category (LOW, MEDIUM, HIGH, CRITICAL)
-    - `explanation` (string): Human-readable risk explanation
-    - `contributing_factors` (array): Key factors influencing the score
-    - `attack_path_details` (object): Attack pattern information
-
-**Example:**
 ```json
 {
-  "risk": {
-    "top_assets": [
-      {
-        "asset_name": "Database Server",
-        "risk_score": 85.5,
-        "risk_level": "CRITICAL",
-        "explanation": "Database is exposed to 3 attack paths with short path length.",
-        "contributing_factors": ["exposed_to_internet", "high_criticality", "multiple_attack_paths"],
-        "attack_path_details": {
-          "attack_path_count": 3,
-          "shortest_attack_path_length": 2
-        }
-      }
-    ]
+  "asset_name": "Database Server",
+  "risk_score": 72.5,
+  "risk_level": "HIGH",
+  "explanation": "Database Server is assessed as HIGH risk (72.5/100).",
+  "contributing_factors": [
+    "High vulnerability severity on this asset",
+    "Very short attack path (3 hops)"
+  ],
+  "attack_path_details": {
+    "attack_path_count": 1,
+    "shortest_attack_path_length": 3,
+    "relationship_count": 3,
+    "entrypoint_reachability": "reachable"
   }
 }
 ```
 
----
+Risk levels are `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
 
-### 3. **`prediction` Section** (Next-Target Ranking)
+## `prediction`
 
-Contains ranked next-compromise targets when graph and risk context is available.
+`prediction.next_targets` contains ranked next-target candidates when a builder has enough graph or risk context. The prediction service combines graph reachability, risk data, and model-informed fallback context.
 
-**Purpose:** Surface likely next targets using graph reachability, asset risk, and model context.
+Example:
 
-- `next_targets` (array): Ranked target candidates. It can be empty when no graph context is available.
-
-**Example:**
 ```json
 {
   "prediction": {
     "next_targets": [
       {
-        "node": "Application Server VM",
-        "probability": 0.82,
+        "node": "Database Server",
+        "probability": 0.73,
         "label": "HIGH",
-        "reasons": ["Directly connected to a high-risk asset"]
+        "reasons": [
+          "Reachable within 2 hops",
+          "Ranked using asset risk and model context"
+        ]
       }
     ]
   }
 }
 ```
 
----
+The array can be empty when no suitable candidates are available.
 
-### 4. **`summary` Section** (Metadata)
+## `summary`
 
-Contains contextual information about the response.
+`summary` contains endpoint-specific metadata.
 
-**Purpose:** Provide metadata that helps frontend understand the data context.
+For `/attack-path`:
 
-**Structure varies by endpoint:**
-
-**For `/attack-path` and `/all-paths`:**
 ```json
 {
   "summary": {
     "start_asset": "Internet",
     "target_asset": "Database Server",
-    "path_length": 3,
-    "total_paths": 5
+    "path_length": 4,
+    "overall_risk_level": "UNKNOWN",
+    "highest_risk": null,
+    "message": "Attack path successfully found",
+    "generated_at": "2026-04-10T12:00:00+00:00"
   }
 }
 ```
 
-**For `/risk-score`:**
-```json
-{
-  "summary": {}
-}
-```
+For `/all-paths`, `summary.total_paths` is included.
 
-**For `/risk-score/{asset_name}`:**
-```json
-{
-  "summary": {
-    "target_asset": "Database Server",
-    "risk_level": "CRITICAL",
-    "generated_at": "2026-03-23T12:00:00+00:00"
-  }
-}
-```
+For `/risk-score`, `summary.highest_risk`, `summary.overall_risk_level`, and `summary.total_assets` describe the ranking.
 
----
+For no-path domain errors, the API still returns the unified envelope and places the error under `summary.error`.
 
-### 5. **`mitigations` Section** (Security Recommendations)
+## `mitigations`
 
-Contains contextual rule-based security recommendations.
+`mitigations` is a list of structured recommendation objects. It can be empty when no risk context is available.
 
-**Purpose:** Suggest security actions to reduce exposure, identity risk, vulnerability risk, lateral movement, and data impact.
-
-- `mitigations` (array): Recommendation objects. It can be empty when no risk context is available.
-
-**Example:**
 ```json
 {
   "mitigations": [
     {
-      "title": "Patch Critical Vulnerabilities",
-      "recommendation": "Prioritize and patch critical vulnerabilities immediately using emergency remediation timelines.",
+      "title": "Restrict Public Exposure",
+      "recommendation": "Limit public ingress to required services only.",
       "severity": "HIGH",
       "priority": "P1",
-      "reason": "Critical vulnerabilities present immediate exploit risk."
+      "reason": "Internet exposure increases exploitability."
     }
   ]
 }
 ```
 
----
-
-## Complete Example JSON Response
-
-**Below is a realistic response from `/all-paths` endpoint:**
+## Complete Example
 
 ```json
 {
+  "version": "v1",
   "graph": {
     "nodes": [
-      {
-        "data": {
-          "id": "Internet",
-          "label": "Internet",
-          "type": "asset"
-        }
-      },
-      {
-        "data": {
-          "id": "Web Server",
-          "label": "Web Server",
-          "type": "asset"
-        }
-      },
-      {
-        "data": {
-          "id": "Application Server",
-          "label": "Application Server",
-          "type": "asset"
-        }
-      },
-      {
-        "data": {
-          "id": "Database Server",
-          "label": "Database Server",
-          "type": "asset"
-        }
-      }
+      { "data": { "id": "Internet", "label": "Internet", "type": "asset" } },
+      { "data": { "id": "Web Server VM", "label": "Web Server VM", "type": "asset" } },
+      { "data": { "id": "Application Server VM", "label": "Application Server VM", "type": "asset" } },
+      { "data": { "id": "Database Server", "label": "Database Server", "type": "asset" } }
     ],
     "edges": [
-      {
-        "data": {
-          "source": "Internet",
-          "target": "Web Server",
-          "label": "ATTACK"
-        }
-      },
-      {
-        "data": {
-          "source": "Web Server",
-          "target": "Application Server",
-          "label": "ATTACK"
-        }
-      },
-      {
-        "data": {
-          "source": "Application Server",
-          "target": "Database Server",
-          "label": "ATTACK"
-        }
-      }
+      { "data": { "source": "Internet", "target": "Web Server VM", "label": "EXPOSED_TO" } },
+      { "data": { "source": "Web Server VM", "target": "Application Server VM", "label": "CONNECTS_TO" } },
+      { "data": { "source": "Application Server VM", "target": "Database Server", "label": "CONNECTS_TO" } }
     ]
   },
   "risk": {
     "top_assets": [
       {
         "asset_name": "Database Server",
-        "risk_score": 85.5,
-        "risk_level": "CRITICAL",
-        "explanation": "Database is exposed to 2 attack paths with minimal hops from Internet.",
-        "contributing_factors": [
-          "exposed_via_multiple_paths",
-          "stores_sensitive_data",
-          "limited_access_controls"
-        ],
-        "attack_path_details": {
-          "attack_path_count": 2,
-          "shortest_attack_path_length": 3
-        }
-      },
-      {
-        "asset_name": "Application Server",
-        "risk_score": 72.3,
+        "risk_score": 72.5,
         "risk_level": "HIGH",
-        "explanation": "Gateway to backend systems with 3 incoming attack paths.",
-        "contributing_factors": [
-          "direct_internet_exposure",
-          "executes_user_code",
-          "memory_vulnerabilities"
-        ],
-        "attack_path_details": {
-          "attack_path_count": 3,
-          "shortest_attack_path_length": 2
-        }
+        "explanation": "Database Server is assessed as HIGH risk (72.5/100).",
+        "contributing_factors": ["High vulnerability severity on this asset"]
       }
     ]
   },
   "prediction": {
-    "next_targets": []
+    "next_targets": [
+      {
+        "node": "Storage Bucket",
+        "probability": 0.64,
+        "label": "MEDIUM",
+        "reasons": ["Reachable from current path context"]
+      }
+    ]
   },
   "summary": {
     "start_asset": "Internet",
     "target_asset": "Database Server",
-    "total_paths": 1
+    "path_length": 4,
+    "overall_risk_level": "HIGH",
+    "highest_risk": "Database Server",
+    "message": "Attack path successfully found",
+    "generated_at": "2026-04-10T12:00:00+00:00"
   },
-  "mitigations": []
+  "mitigations": [
+    {
+      "title": "Patch Critical Vulnerabilities",
+      "recommendation": "Prioritize remediation for critical and high findings on the target asset.",
+      "severity": "HIGH",
+      "priority": "P1",
+      "reason": "Known vulnerabilities increase compromise likelihood."
+    }
+  ]
 }
 ```
 
----
+## Validation Checklist
 
-## Cytoscape Compatibility
+- [ ] `graph.nodes` and `graph.edges` are arrays
+- [ ] each node has `data.id`, `data.label`, and `data.type`
+- [ ] each edge has `data.source`, `data.target`, and `data.label`
+- [ ] path endpoint edge labels preserve Neo4j relationship types
+- [ ] `risk.top_assets` is an array
+- [ ] `prediction.next_targets` is an array
+- [ ] `summary` is an object
+- [ ] `mitigations` is an array of structured recommendation objects
+- [ ] errors use `summary.error` inside the unified envelope
 
-The `graph.nodes` and `graph.edges` sections are **fully compatible with Cytoscape.js** visualization library.
+## Quick Validation
 
-### Node Format (Cytoscape Compatible)
-
-**Required structure:**
-```json
-{
-  "data": {
-    "id": "unique_identifier",
-    "label": "Display Name",
-    "type": "asset_type"
-  }
-}
-```
-
-**Rules:**
-- `id` must be unique across all nodes
-- `label` is what displays in visualization
-- `type` can be: `asset`, `service`, `user`, `internet`, etc.
-
-**Frontend Usage (Cytoscape.js):**
-```javascript
-const elements = response.graph.nodes.map(node => ({
-  data: node.data
-}));
-
-cyInstance.add(elements);
-```
-
----
-
-### Edge Format (Cytoscape Compatible)
-
-**Required structure:**
-```json
-{
-  "data": {
-    "source": "source_node_id",
-    "target": "target_node_id",
-    "label": "Relationship Type"
-  }
-}
-```
-
-**Rules:**
-- `source` and `target` must reference existing node IDs
-- `label` describes the relationship (e.g., "ATTACK", "EXECUTES", "CONNECTS_TO")
-- Edges are directional (source → target)
-
-**Frontend Usage (Cytoscape.js):**
-```javascript
-const edges = response.graph.edges.map(edge => ({
-  data: edge.data
-}));
-
-cyInstance.add(edges);
-```
-
----
-
-## Response Validation Checklist
-
-**Every endpoint response must satisfy these requirements:**
-
-- [ ] **`graph` section exists**
-  - [ ] `graph.nodes` is an array
-  - [ ] `graph.edges` is an array
-  - [ ] Each node has `{ data: { id, label, type } }`
-  - [ ] Each edge has `{ data: { source, target, label } }`
-
-- [ ] **`risk` section exists**
-  - [ ] `risk.top_assets` is an array
-  - [ ] Each asset has required fields:
-    - [ ] `asset_name` (string)
-    - [ ] `risk_score` (number 0-100)
-    - [ ] `risk_level` (string: LOW/MEDIUM/HIGH/CRITICAL)
-
-- [ ] **`prediction` section exists**
-  - [ ] `prediction.next_targets` is an array (can be empty)
-
-- [ ] **`summary` section exists**
-  - [ ] `summary` is an object (can be empty `{}`)
-
-- [ ] **`mitigations` section exists**
-  - [ ] `mitigations` is an array (can be empty `[]`)
-  - [ ] Each non-empty mitigation has `title`, `recommendation`, `severity`, `priority`, and `reason`
-
-- [ ] **No field naming inconsistencies**
-  - [ ] All responses use same key names across endpoints
-  - [ ] No alternate names like `nodes` vs `graph_nodes`
-  - [ ] No extra fields not in the unified schema
-
----
-
-## Testing the Response Structure
-
-### Using curl to test endpoints:
-
-```bash
-# Test /attack-path endpoint
-curl "http://localhost:8000/attack-path?start=Internet&target=Database Server"
-
-# Test /risk-score endpoint
-curl "http://localhost:8000/risk-score"
-
-# Test /risk-score/{asset_name} endpoint
-curl "http://localhost:8000/risk-score/Database Server"
-```
-
-### Expected Response Code
-- **200**: Success - response contains valid unified schema
-- **400**: Bad request - invalid parameters
-- **500**: Server error - check Neo4j connection
-
-### Schema Validation
-All responses should pass this validation:
 ```python
 from app.schemas import FinalResponse
-response_data = response.json()
-validated = FinalResponse(**response_data)  # Should not raise exception
+
+validated = FinalResponse(**response.json())
 ```
 
----
+## Status
 
-## Frontend Integration Guide
-
-### 1. Parse Response
-```javascript
-const response = await fetch('/risk-score');
-const data = await response.json();
-```
-
-### 2. Render Graph
-```javascript
-const cy = cytoscape({
-  container: document.getElementById('cy'),
-  elements: [
-    ...data.graph.nodes,
-    ...data.graph.edges
-  ],
-  style: [...]
-});
-```
-
-### 3. Display Risk Rankings
-```javascript
-data.risk.top_assets.forEach(asset => {
-  console.log(`${asset.asset_name}: ${asset.risk_level} (${asset.risk_score}/100)`);
-});
-```
-
-### 4. Show Summary Info
-```javascript
-if (data.summary && Object.keys(data.summary).length > 0) {
-  console.log('Path details:', data.summary);
-}
-```
-
----
-
-## Summary
-
-- ✅ All endpoints return the **same unified schema**
-- ✅ Graph data is **Cytoscape-compatible**
-- ✅ Response is **frontend-ready**
-- ✅ Includes next-target predictions and contextual mitigations
-- ✅ Consistent field naming across all endpoints
-- ✅ Validated with Pydantic schemas
-
-**Status:** Ready for frontend integration! 🚀
+[ok] Unified envelope is current.
+[ok] Graph data is Cytoscape-compatible.
+[ok] Relationship labels are preserved when supplied by graph services.
+[ok] Predictions and mitigations are active extension sections, not placeholder-only fields.

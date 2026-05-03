@@ -8,15 +8,17 @@ from fastapi import APIRouter, HTTPException
 from neo4j.exceptions import AuthError, Neo4jError, ServiceUnavailable
 
 from app.builders.response_builder import (
+    build_all_paths_response,
     build_attack_risk_response,
+    build_attack_path_response,
     build_risk_score_response,
     build_single_asset_risk_response,
 )
 from app.schemas import FinalResponse
 from app.services.attack_graph_service import (
-    generate_attack_path,
-    generate_full_graph,
+    get_all_attack_paths,
     get_asset_existence,
+    get_shortest_attack_path,
 )
 from app.services.attack_risk_service import get_attack_risk_summary
 from app.services.risk_service import get_single_asset_risk_data, get_top_asset_risk_scores
@@ -84,7 +86,20 @@ def attack_path(start: str, target: str):
 
         start_exists, target_exists = get_asset_existence(validated_start, validated_target)
 
-        return generate_attack_path(
+        path = get_shortest_attack_path(validated_start, validated_target)
+        if path is None:
+            return build_attack_path_response(
+                [],
+                [],
+                start=validated_start,
+                target=validated_target,
+                start_exists=start_exists,
+                target_exists=target_exists,
+            )
+
+        return build_attack_path_response(
+            path.get("nodes", []),
+            path.get("relationships", []),
             start=validated_start,
             target=validated_target,
             start_exists=start_exists,
@@ -140,7 +155,9 @@ def all_paths(start: str, target: str):
 
         start_exists, target_exists = get_asset_existence(validated_start, validated_target)
 
-        return generate_full_graph(
+        paths = get_all_attack_paths(validated_start, validated_target)
+        return build_all_paths_response(
+            paths,
             start=validated_start,
             target=validated_target,
             start_exists=start_exists,

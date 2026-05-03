@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CloudGuard AI</title>
     <link rel="stylesheet" href="./css/styles.css" />
-    <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+    <script src="./vendor/cytoscape.min.js"></script>
     <script src="./js/app.js"></script>
   </head>
   <body>
@@ -97,14 +97,14 @@
           </section>
         </section>
 
-        <!-- 🔥 GRAPH SECTION UPDATED -->
+        <!-- Graph section -->
         <section class="dashboard-card graph-card" aria-label="Attack graph">
           <h2>Attack Graph</h2>
 
           <!-- Graph Controls -->
           <div class="graph-controls">
             <button type="button" id="zoom-in">+</button>
-            <button type="button" id="zoom-out">−</button>
+            <button type="button" id="zoom-out">-</button>
             <button type="button" id="fit-graph">Fit</button>
             <button type="button" id="reset-graph">Reset</button>
             <button type="button" id="simulate-attack-button" disabled>Simulate Attack</button>

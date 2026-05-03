@@ -11,7 +11,7 @@ from app.services.risk_service import get_single_asset_risk_data
 
 MAX_CANDIDATE_PATH_DEPTH = 3
 MAX_CANDIDATES = 25
-DEBUG = os.getenv("CLOUDGUARD_DEBUG", "true").strip().lower() in {"1", "true", "yes", "on"}
+DEBUG = os.getenv("CLOUDGUARD_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 ASSET_PROFILE_DEFAULTS: dict[str, dict[str, float]] = {
